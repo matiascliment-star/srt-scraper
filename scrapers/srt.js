@@ -72,15 +72,54 @@ async function loginAfip(page, cuit, password) {
 async function navegarAeServicios(page) {
   console.log('🔄 Navegando a e-Servicios SRT...');
   
-  // Primero ir a la home de e-Servicios para establecer sesión SSO
-  await page.goto(SRT_URLS.eServicios, { waitUntil: 'networkidle2', timeout: 60000 });
-  console.log('📍 En home de e-Servicios:', page.url());
-  
+  // Buscar y clickear el link de e-Servicios SRT en el portal AFIP
   await delay(2000);
   
-  // Ahora ir a la página de expedientes
+  // Buscar el link que contiene "e-Servicios SRT"
+  const clicked = await page.evaluate(() => {
+    const links = document.querySelectorAll('a');
+    for (const link of links) {
+      if (link.textContent.includes('e-Servicios SRT') || link.textContent.includes('e-Servicios S.R.T')) {
+        link.click();
+        return true;
+      }
+    }
+    // Buscar en h3 o divs
+    const elements = document.querySelectorAll('h3, div, span');
+    for (const el of elements) {
+      if (el.textContent.includes('e-Servicios SRT')) {
+        const parent = el.closest('a') || el.closest('[onclick]') || el.closest('button');
+        if (parent) {
+          parent.click();
+          return true;
+        }
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  });
+  
+  if (clicked) {
+    console.log('📍 Click en e-Servicios SRT');
+    await delay(3000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+  } else {
+    console.log('⚠️ No encontré link e-Servicios SRT, yendo directo...');
+  }
+  
+  await delay(2000);
+  console.log('📍 URL actual:', page.url());
+  
+  // Si no estamos en SRT, ir directo
+  if (!page.url().includes('srt.gob.ar')) {
+    await page.goto(SRT_URLS.eServicios, { waitUntil: 'networkidle2', timeout: 60000 });
+    await delay(2000);
+  }
+  
+  // Navegar a expedientes
   await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 60000 });
-  console.log('📍 En página de expedientes:', page.url());
+  console.log('📍 En expedientes:', page.url());
   
   await delay(2000);
   
@@ -90,22 +129,39 @@ async function navegarAeServicios(page) {
 
 async function obtenerExpedientes(page) {
   console.log('📋 Obteniendo lista de expedientes...');
+  console.log('📍 URL actual:', page.url());
   
   const response = await page.evaluate(async (url) => {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
-      body: JSON.stringify({ numExpdte: null, numAnio: null })
-    });
-    return res.json();
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+        body: JSON.stringify({ numExpdte: null, numAnio: null })
+      });
+      const text = await res.text();
+      try {
+        return { ok: true, data: JSON.parse(text) };
+      } catch (e) {
+        return { ok: false, text: text.substring(0, 500), status: res.status };
+      }
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   }, SRT_URLS.apiExpedientes);
   
-  if (!response.d) {
-    console.log('⚠️ Respuesta inesperada:', JSON.stringify(response));
+  console.log('📦 Response:', JSON.stringify(response).substring(0, 200));
+  
+  if (!response.ok) {
+    console.log('⚠️ Error en API:', response.error || response.text);
     return [];
   }
   
-  const expedientes = response.d.map(exp => ({
+  if (!response.data.d) {
+    console.log('⚠️ Respuesta sin datos');
+    return [];
+  }
+  
+  const expedientes = response.data.d.map(exp => ({
     oid: exp.OID,
     nro: exp.Nro,
     motivo: exp.Motivo,

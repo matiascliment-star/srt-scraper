@@ -51,7 +51,7 @@ async function loginAfip(page, cuit, password) {
     page.click(AFIP_SELECTORS.btnIngresar)
   ]);
   
-  await delay(1000);
+  await delay(2000);
   
   const currentUrl = page.url();
   if (currentUrl.includes('portalcf.cloud.afip.gob.ar')) {
@@ -72,10 +72,19 @@ async function loginAfip(page, cuit, password) {
 async function navegarAeServicios(page) {
   console.log('🔄 Navegando a e-Servicios SRT...');
   
-  await delay(1000);
-  await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
+  // Primero ir a la home de e-Servicios para establecer sesión SSO
+  await page.goto(SRT_URLS.eServicios, { waitUntil: 'networkidle2', timeout: 60000 });
+  console.log('📍 En home de e-Servicios:', page.url());
   
-  console.log('✅ En página de expedientes SRT');
+  await delay(2000);
+  
+  // Ahora ir a la página de expedientes
+  await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 60000 });
+  console.log('📍 En página de expedientes:', page.url());
+  
+  await delay(2000);
+  
+  console.log('✅ Navegación completada');
   return true;
 }
 
@@ -92,7 +101,7 @@ async function obtenerExpedientes(page) {
   }, SRT_URLS.apiExpedientes);
   
   if (!response.d) {
-    console.log('⚠️ Respuesta inesperada:', response);
+    console.log('⚠️ Respuesta inesperada:', JSON.stringify(response));
     return [];
   }
   
@@ -110,7 +119,7 @@ async function obtenerExpedientes(page) {
     imprimible: exp.Imprimible
   }));
   
-  console.log(`✅ ${expedientes.length} expedientes encontrados`);
+  console.log('✅ ' + expedientes.length + ' expedientes encontrados');
   return expedientes;
 }
 

@@ -60,8 +60,10 @@ async function loginAfip(page, cuit, password) {
   throw new Error('Login AFIP falló - URL: ' + currentUrl);
 }
 
-async function navegarAeServicios(page, browser) {
+async function navegarAeServicios(page) {
   console.log('🔄 Navegando a e-Servicios SRT...');
+  
+  const browser = page.browser();
   
   // Paso 1: Ir a mis-servicios
   await page.goto(SRT_URLS.misServicios, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -79,9 +81,7 @@ async function navegarAeServicios(page, browser) {
   const newPagePromise = new Promise(resolve => {
     browser.once('targetcreated', async target => {
       const newPage = await target.page();
-      if (newPage) {
-        resolve(newPage);
-      }
+      if (newPage) resolve(newPage);
     });
   });
   

@@ -2,9 +2,7 @@ const puppeteer = require('puppeteer');
 
 const SRT_URLS = {
   afipLogin: 'https://auth.afip.gob.ar/contribuyente_/login.xhtml',
-  afipPortal: 'https://portalcf.cloud.afip.gob.ar/portal/app/',
   misServicios: 'https://portalcf.cloud.afip.gob.ar/portal/app/mis-servicios',
-  eServicios: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
   apiIngresos: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerIngresos'
@@ -65,62 +63,70 @@ async function loginAfip(page, cuit, password) {
 async function navegarAeServicios(page) {
   console.log('🔄 Navegando a e-Servicios SRT...');
   
-  // Paso 1: Click en "Ver todos"
-  console.log('📍 Clickeando Ver todos...');
+  // Paso 1: Ir a mis-servicios
   await page.goto(SRT_URLS.misServicios, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
   
-  console.log('📍 En mis-servicios:', page.url());
+  console.log('📍 En mis-servicios');
   
-  // Paso 2: Click en "E-SERVICIOS SRT"
-  console.log('📍 Buscando E-SERVICIOS SRT...');
+  // Scroll hasta abajo para que cargue todo
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+  await delay(1000);
   
-  const srtLink = await page.$('a[title="srt eservicios"]');
-  if (srtLink) {
-    console.log('📍 Encontrado por title, clickeando...');
-    await srtLink.click();
-  } else {
-    // Fallback: buscar por texto
-    const clicked = await page.evaluate(() => {
-      const links = document.querySelectorAll('a.panel');
-      for (const link of links) {
-        if (link.innerText.includes('E-SERVICIOS SRT') || link.innerText.includes('SERVICIOS SRT')) {
-          link.click();
-          return true;
-        }
-      }
-      return false;
-    });
+  // Scroll un poco más por si hay lazy loading
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight * 2);
+  });
+  await delay(1000);
+  
+  console.log('📍 Scroll hecho, buscando SRT...');
+  
+  // Buscar el link de E-SERVICIOS SRT y hacer scroll hacia él
+  const clicked = await page.evaluate(() => {
+    const allElements = document.querySelectorAll('a, div[role="button"], .panel, .panel-default');
     
-    if (!clicked) {
-      console.log('⚠️ No encontré link SRT');
+    for (const el of allElements) {
+      const text = el.innerText.toUpperCase();
+      if (text.includes('E-SERVICIOS SRT') || 
+          (text.includes('SRT') && text.includes('VENTANILLA'))) {
+        // Scroll al elemento
+        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+        // Click
+        el.click();
+        return { found: true, text: el.innerText.substring(0, 60) };
+      }
     }
+    return { found: false };
+  });
+  
+  console.log('📍 Click result:', JSON.stringify(clicked));
+  
+  if (clicked.found) {
+    await delay(3000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
   }
   
-  await delay(3000);
+  console.log('📍 URL después de click:', page.url());
   
-  // Esperar que cargue e-Servicios o se abra nueva pestaña
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-  
-  console.log('📍 URL después de click SRT:', page.url());
-  
-  // Si estamos en eservicios.srt.gob.ar, ir a expedientes
+  // Si llegamos a SRT, ir a expedientes
   if (page.url().includes('srt.gob.ar')) {
+    console.log('📍 En SRT, yendo a expedientes...');
     await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
-    console.log('📍 URL expedientes:', page.url());
   }
   
+  console.log('📍 URL final:', page.url());
   await delay(2000);
   
   return !page.url().includes('ErrorValidate');
 }
 
 async function obtenerExpedientes(page) {
-  console.log('📋 Obteniendo lista de expedientes...');
-  console.log('📍 URL:', page.url());
+  console.log('📋 Obteniendo expedientes...');
   
   if (page.url().includes('ErrorValidate')) {
-    console.log('❌ Sesión SRT no válida');
+    console.log('❌ Sesión no válida');
     return [];
   }
   
@@ -138,7 +144,7 @@ async function obtenerExpedientes(page) {
   }, SRT_URLS.apiExpedientes);
   
   if (response.error || !response.data?.d) {
-    console.log('⚠️ Error o sin datos:', response.error);
+    console.log('⚠️ Error:', response.error);
     return [];
   }
   

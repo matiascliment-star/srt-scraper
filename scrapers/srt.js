@@ -60,7 +60,7 @@ async function loginAfip(page, cuit, password) {
   throw new Error('Login AFIP falló - URL: ' + currentUrl);
 }
 
-async function navegarAeServicios(page) {
+async function navegarAeServicios(page, browser) {
   console.log('🔄 Navegando a e-Servicios SRT...');
   
   // Paso 1: Ir a mis-servicios
@@ -69,21 +69,23 @@ async function navegarAeServicios(page) {
   
   console.log('📍 En mis-servicios');
   
-  // Scroll hasta abajo para que cargue todo
-  await page.evaluate(() => {
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-  await delay(1000);
-  
-  // Scroll un poco más por si hay lazy loading
-  await page.evaluate(() => {
-    window.scrollTo(0, document.body.scrollHeight * 2);
-  });
+  // Scroll hasta abajo
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await delay(1000);
   
   console.log('📍 Scroll hecho, buscando SRT...');
   
-  // Buscar el link de E-SERVICIOS SRT y hacer scroll hacia él
+  // Preparar para capturar nueva pestaña
+  const newPagePromise = new Promise(resolve => {
+    browser.once('targetcreated', async target => {
+      const newPage = await target.page();
+      if (newPage) {
+        resolve(newPage);
+      }
+    });
+  });
+  
+  // Buscar y clickear E-SERVICIOS SRT
   const clicked = await page.evaluate(() => {
     const allElements = document.querySelectorAll('a, div[role="button"], .panel, .panel-default');
     
@@ -91,9 +93,7 @@ async function navegarAeServicios(page) {
       const text = el.innerText.toUpperCase();
       if (text.includes('E-SERVICIOS SRT') || 
           (text.includes('SRT') && text.includes('VENTANILLA'))) {
-        // Scroll al elemento
         el.scrollIntoView({ behavior: 'instant', block: 'center' });
-        // Click
         el.click();
         return { found: true, text: el.innerText.substring(0, 60) };
       }
@@ -103,29 +103,51 @@ async function navegarAeServicios(page) {
   
   console.log('📍 Click result:', JSON.stringify(clicked));
   
-  if (clicked.found) {
-    await delay(3000);
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+  if (!clicked.found) {
+    console.log('❌ No encontré link SRT');
+    return { page, success: false };
   }
   
-  console.log('📍 URL después de click:', page.url());
+  // Esperar nueva pestaña o navegación
+  console.log('📍 Esperando nueva pestaña...');
   
-  // Si llegamos a SRT, ir a expedientes
+  const newPage = await Promise.race([
+    newPagePromise,
+    delay(8000).then(() => null)
+  ]);
+  
+  if (newPage) {
+    console.log('📍 Nueva pestaña detectada!');
+    await newPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+    await delay(2000);
+    console.log('📍 URL nueva pestaña:', newPage.url());
+    
+    // Ir a expedientes en la nueva pestaña
+    if (newPage.url().includes('srt.gob.ar')) {
+      await newPage.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
+      console.log('📍 URL expedientes:', newPage.url());
+    }
+    
+    return { page: newPage, success: !newPage.url().includes('ErrorValidate') };
+  }
+  
+  // Si no hay nueva pestaña, verificar si navegó en la misma
+  console.log('📍 No hubo nueva pestaña, verificando navegación...');
+  await delay(3000);
+  console.log('📍 URL actual:', page.url());
+  
   if (page.url().includes('srt.gob.ar')) {
-    console.log('📍 En SRT, yendo a expedientes...');
     await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
   }
   
-  console.log('📍 URL final:', page.url());
-  await delay(2000);
-  
-  return !page.url().includes('ErrorValidate');
+  return { page, success: page.url().includes('srt.gob.ar') };
 }
 
 async function obtenerExpedientes(page) {
   console.log('📋 Obteniendo expedientes...');
+  console.log('📍 URL:', page.url());
   
-  if (page.url().includes('ErrorValidate')) {
+  if (page.url().includes('ErrorValidate') || !page.url().includes('srt.gob.ar')) {
     console.log('❌ Sesión no válida');
     return [];
   }

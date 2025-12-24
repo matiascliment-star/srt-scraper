@@ -143,81 +143,35 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   console.log('📍 URL comunicaciones:', page.url());
   
-  // Screenshot antes del click
-  await page.screenshot({ path: '/tmp/antes_buscar.png', fullPage: true });
-  console.log('📸 Screenshot antes guardado');
+  // Esperar el botón
+  await page.waitForSelector('#btnBuscar', { visible: true, timeout: 5000 });
+  console.log('🔍 Botón #btnBuscar encontrado');
   
-  // Debug: ver qué elementos hay
-  const formInfo = await page.evaluate(() => {
-    const forms = document.querySelectorAll('form');
-    const inputs = document.querySelectorAll('input');
-    const buttons = document.querySelectorAll('button, input[type="submit"], input[type="button"]');
-    
-    return {
-      forms: forms.length,
-      formActions: Array.from(forms).map(f => f.action),
-      inputs: inputs.length,
-      buttons: Array.from(buttons).map(b => ({ 
-        tag: b.tagName, 
-        type: b.type, 
-        value: b.value, 
-        id: b.id,
-        name: b.name,
-        class: b.className 
-      }))
-    };
-  });
+  // Click con Puppeteer y esperar navegación a ComunicacionesListado.aspx
+  console.log('🔍 Clickeando #btnBuscar...');
   
-  console.log('📍 Form info:', JSON.stringify(formInfo, null, 2));
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
+    page.click('#btnBuscar')
+  ]);
   
-  // Buscar y hacer click en BUSCAR con submit del form
-  console.log('🔍 Intentando submit del formulario...');
+  console.log('📍 Nueva URL:', page.url());
   
-  const submitResult = await page.evaluate(() => {
-    // Buscar el botón BUSCAR
-    const buscarBtn = document.querySelector('input[value="BUSCAR"], input.btn-success, button.btn-success');
-    if (!buscarBtn) return { error: 'No encontré botón BUSCAR' };
-    
-    // Buscar el form padre
-    const form = buscarBtn.closest('form');
-    if (form) {
-      // Submit del form
-      form.submit();
-      return { method: 'form.submit', formId: form.id, formAction: form.action };
-    } else {
-      // Click directo
-      buscarBtn.click();
-      return { method: 'click', btnId: buscarBtn.id };
-    }
-  });
+  await delay(3000);
   
-  console.log('📍 Submit result:', JSON.stringify(submitResult));
-  
-  // Esperar navegación después del submit
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(e => {
-    console.log('⚠️ No hubo navegación después de submit:', e.message);
-  });
-  
-  await delay(5000);
-  
-  // Screenshot después
-  await page.screenshot({ path: '/tmp/despues_buscar.png', fullPage: true });
-  console.log('📸 Screenshot después guardado');
-  
-  // Debug después
+  // Debug
   const debug = await page.evaluate(() => {
     return {
       url: window.location.href,
       tables: document.querySelectorAll('table').length,
       tbodyRows: document.querySelectorAll('table tbody tr').length,
       allTr: document.querySelectorAll('tr').length,
-      pageText: document.body.innerText.substring(0, 1200)
+      pageText: document.body.innerText.substring(0, 1000)
     };
   });
   
-  console.log('📍 Debug después - URL:', debug.url);
   console.log('📍 Debug - tables:', debug.tables, 'tbody tr:', debug.tbodyRows, 'all tr:', debug.allTr);
-  console.log('📍 Texto:', debug.pageText.substring(0, 600));
+  console.log('📍 Texto:', debug.pageText.substring(0, 500));
   
   // Scrapear
   const comunicaciones = await page.evaluate(() => {
@@ -249,6 +203,9 @@ async function obtenerComunicaciones(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
+  if (comunicaciones.length > 0) {
+    console.log('📨 Primera:', JSON.stringify(comunicaciones[0]));
+  }
   
   return comunicaciones;
 }

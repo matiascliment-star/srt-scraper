@@ -1,8 +1,7 @@
 const puppeteer = require('puppeteer');
 
 const SRT_URLS = {
-  afipLogin: 'https://auth.afip.gob.ar/contribuyente_/login.xhtml',
-  misServicios: 'https://portalcf.cloud.afip.gob.ar/portal/app/mis-servicios',
+  eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
   apiIngresos: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerIngresos'
@@ -23,124 +22,60 @@ function parseDotNetDate(dotNetDate) {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function loginAfip(page, cuit, password) {
-  console.log('🔐 Iniciando login en AFIP...');
+async function loginYNavegarSRT(page, cuit, password) {
+  console.log('🔐 Yendo directo a e-Servicios SRT...');
   
-  await page.goto(SRT_URLS.afipLogin, { waitUntil: 'networkidle2', timeout: 60000 });
+  // Ir directo a e-Servicios, va a redirigir a AFIP para login
+  await page.goto(SRT_URLS.eServiciosHome, { waitUntil: 'networkidle2', timeout: 60000 });
   
-  await page.waitForSelector(AFIP_SELECTORS.inputCuit, { visible: true });
-  await page.type(AFIP_SELECTORS.inputCuit, cuit, { delay: 50 });
-  await delay(500);
+  console.log('📍 URL:', page.url());
   
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
-    page.click(AFIP_SELECTORS.btnSiguiente)
-  ]);
-  
-  await delay(1000);
-  
-  await page.waitForSelector(AFIP_SELECTORS.inputPassword, { visible: true, timeout: 15000 });
-  await delay(500);
-  await page.type(AFIP_SELECTORS.inputPassword, password, { delay: 50 });
-  await delay(500);
-  
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-    page.click(AFIP_SELECTORS.btnIngresar)
-  ]);
-  
-  await delay(2000);
-  
-  const currentUrl = page.url();
-  if (currentUrl.includes('portalcf.cloud.afip.gob.ar')) {
-    console.log('✅ Login AFIP exitoso');
-    return true;
+  // Si redirigió a AFIP, hacer login
+  if (page.url().includes('afip.gob.ar')) {
+    console.log('📍 En AFIP, haciendo login...');
+    
+    // Ingresar CUIT
+    await page.waitForSelector(AFIP_SELECTORS.inputCuit, { visible: true, timeout: 10000 });
+    await page.type(AFIP_SELECTORS.inputCuit, cuit, { delay: 50 });
+    await delay(500);
+    
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+      page.click(AFIP_SELECTORS.btnSiguiente)
+    ]);
+    
+    await delay(1000);
+    
+    // Ingresar password
+    await page.waitForSelector(AFIP_SELECTORS.inputPassword, { visible: true, timeout: 10000 });
+    await page.type(AFIP_SELECTORS.inputPassword, password, { delay: 50 });
+    await delay(500);
+    
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+      page.click(AFIP_SELECTORS.btnIngresar)
+    ]);
+    
+    await delay(3000);
   }
   
-  throw new Error('Login AFIP falló - URL: ' + currentUrl);
-}
-
-async function navegarAeServicios(page) {
-  console.log('🔄 Navegando a e-Servicios SRT...');
+  console.log('📍 Después de login:', page.url());
   
-  const browser = page.browser();
-  
-  // Paso 1: Ir a mis-servicios
-  await page.goto(SRT_URLS.misServicios, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
-  
-  console.log('📍 En mis-servicios');
-  
-  // Scroll hasta abajo
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await delay(1000);
-  
-  console.log('📍 Scroll hecho, buscando SRT...');
-  
-  // Preparar para capturar nueva pestaña
-  const newPagePromise = new Promise(resolve => {
-    browser.once('targetcreated', async target => {
-      const newPage = await target.page();
-      if (newPage) resolve(newPage);
-    });
-  });
-  
-  // Buscar y clickear E-SERVICIOS SRT
-  const clicked = await page.evaluate(() => {
-    const allElements = document.querySelectorAll('a, div[role="button"], .panel, .panel-default');
-    
-    for (const el of allElements) {
-      const text = el.innerText.toUpperCase();
-      if (text.includes('E-SERVICIOS SRT') || 
-          (text.includes('SRT') && text.includes('VENTANILLA'))) {
-        el.scrollIntoView({ behavior: 'instant', block: 'center' });
-        el.click();
-        return { found: true, text: el.innerText.substring(0, 60) };
-      }
-    }
-    return { found: false };
-  });
-  
-  console.log('📍 Click result:', JSON.stringify(clicked));
-  
-  if (!clicked.found) {
-    console.log('❌ No encontré link SRT');
-    return { page, success: false };
-  }
-  
-  // Esperar nueva pestaña o navegación
-  console.log('📍 Esperando nueva pestaña...');
-  
-  const newPage = await Promise.race([
-    newPagePromise,
-    delay(8000).then(() => null)
-  ]);
-  
-  if (newPage) {
-    console.log('📍 Nueva pestaña detectada!');
-    await newPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-    await delay(2000);
-    console.log('📍 URL nueva pestaña:', newPage.url());
-    
-    // Ir a expedientes en la nueva pestaña
-    if (newPage.url().includes('srt.gob.ar')) {
-      await newPage.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
-      console.log('📍 URL expedientes:', newPage.url());
-    }
-    
-    return { page: newPage, success: !newPage.url().includes('ErrorValidate') };
-  }
-  
-  // Si no hay nueva pestaña, verificar si navegó en la misma
-  console.log('📍 No hubo nueva pestaña, verificando navegación...');
-  await delay(3000);
-  console.log('📍 URL actual:', page.url());
-  
+  // Debería estar en e-Servicios SRT ahora
   if (page.url().includes('srt.gob.ar')) {
+    console.log('✅ Login exitoso, en e-Servicios SRT');
+    
+    // Ir a expedientes
     await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
+    console.log('📍 URL expedientes:', page.url());
+    
+    await delay(2000);
+    
+    return !page.url().includes('ErrorValidate');
   }
   
-  return { page, success: page.url().includes('srt.gob.ar') };
+  console.log('❌ No llegamos a SRT');
+  return false;
 }
 
 async function obtenerExpedientes(page) {
@@ -207,8 +142,7 @@ async function obtenerMovimientos(page, expedienteOid) {
 }
 
 module.exports = {
-  loginAfip,
-  navegarAeServicios,
+  loginYNavegarSRT,
   obtenerExpedientes,
   obtenerMovimientos,
   parseDotNetDate,

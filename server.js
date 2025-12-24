@@ -28,7 +28,7 @@ function parseFechaSrt(fechaStr) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v6.3' });
+  res.json({ status: 'ok', service: 'SRT Scraper v6.4' });
 });
 
 // DESCARGAR PDF DEL EXPEDIENTE COMPLETO
@@ -47,18 +47,15 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     
-    // Login
     const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
     if (!loginOk) {
       await browser.close();
       return res.status(500).json({ error: 'No se pudo conectar a SRT' });
     }
     
-    // Navegar a expedientes para establecer sesión
     await navegarAExpedientes(page);
     await delay(2000);
     
-    // Llamar a ObtenerPDF
     const pdfData = await page.evaluate(async (expedienteOid) => {
       try {
         const res = await fetch('https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerPDF', {
@@ -87,7 +84,6 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
       return res.status(404).json({ error: 'No se encontró el PDF' });
     }
     
-    // El PDF viene en base64
     const pdfBuffer = Buffer.from(pdfData.data, 'base64');
     
     console.log('📥 PDF obtenido:', pdfBuffer.length, 'bytes');
@@ -156,9 +152,9 @@ app.get('/srt/pdf/:adjuntoId', async (req, res) => {
   }
 });
 
-// IMPORTACIÓN MASIVA DE COMUNICACIONES
+// IMPORTACIÓN MASIVA - SOLO EXPEDIENTES VINCULADOS
 app.post('/srt/importar-comunicaciones', async (req, res) => {
-  const { usuario, password, limit = 50 } = req.body;
+  const { usuario, password, limit = 500 } = req.body;
   
   if (!usuario || !password) {
     return res.status(400).json({ error: 'Faltan credenciales' });
@@ -166,6 +162,7 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
   
   let browser;
   const stats = {
+    casosVinculados: 0,
     expedientesProcesados: 0,
     comunicacionesNuevas: 0,
     comunicacionesExistentes: 0,
@@ -174,6 +171,24 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
   };
   
   try {
+    // Obtener casos vinculados de Supabase
+    const { data: casosVinculados, error: errorCasos } = await supabase
+      .from('casos_srt')
+      .select('id, srt_expediente_oid, numero_srt')
+      .not('srt_expediente_oid', 'is', null)
+      .limit(limit);
+    
+    if (errorCasos) {
+      return res.status(500).json({ error: 'Error obteniendo casos: ' + errorCasos.message });
+    }
+    
+    stats.casosVinculados = casosVinculados.length;
+    console.log(`📋 ${casosVinculados.length} casos vinculados a procesar`);
+    
+    if (casosVinculados.length === 0) {
+      return res.json({ success: true, message: 'No hay casos vinculados', stats });
+    }
+    
     browser = await puppeteer.launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
@@ -188,23 +203,13 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
     }
     
     await navegarAExpedientes(page);
-    const expedientes = await obtenerExpedientes(page);
-    const expedientesAProcessar = expedientes.slice(0, limit);
     
-    console.log(`📋 Procesando ${expedientesAProcessar.length} expedientes...`);
-    
-    for (const exp of expedientesAProcessar) {
+    for (const caso of casosVinculados) {
       try {
-        console.log(`\n📁 Expediente ${exp.nro} (OID: ${exp.oid})`);
+        console.log(`\n📁 Caso ${caso.numero_srt} (OID: ${caso.srt_expediente_oid})`);
         stats.expedientesProcesados++;
         
-        const { data: casoSrt } = await supabase
-          .from('casos_srt')
-          .select('id')
-          .eq('srt_expediente_oid', exp.oid)
-          .single();
-        
-        const comunicaciones = await obtenerComunicaciones(page, exp.oid);
+        const comunicaciones = await obtenerComunicaciones(page, caso.srt_expediente_oid);
         console.log(`  📨 ${comunicaciones.length} comunicaciones`);
         
         for (const com of comunicaciones) {
@@ -226,8 +231,8 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
           const { data: nuevaCom, error: errorCom } = await supabase
             .from('comunicaciones_srt')
             .insert({
-              caso_srt_id: casoSrt?.id || null,
-              srt_expediente_oid: exp.oid,
+              caso_srt_id: caso.id,
+              srt_expediente_oid: caso.srt_expediente_oid,
               srt_expediente_nro: com.expediente,
               srt_tra_id: com.traID,
               fecha_notificacion: parseFechaSrt(com.fechaNotificacion),
@@ -266,9 +271,17 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
           await delay(500);
         }
         
+        // Actualizar URL del PDF del expediente en casos_srt
+        await supabase
+          .from('casos_srt')
+          .update({ 
+            url_pdf_expediente: `https://srt-scraper-production.up.railway.app/srt/expediente-pdf/${caso.srt_expediente_oid}`
+          })
+          .eq('id', caso.id);
+        
       } catch (expError) {
-        console.log(`❌ Error en expediente ${exp.nro}:`, expError.message);
-        stats.errores.push({ expediente: exp.nro, error: expError.message });
+        console.log(`❌ Error en caso ${caso.numero_srt}:`, expError.message);
+        stats.errores.push({ caso: caso.numero_srt, error: expError.message });
       }
     }
     
@@ -306,5 +319,5 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 SRT Scraper v6.3 en puerto ${PORT}`);
+  console.log(`🚀 SRT Scraper v6.4 en puerto ${PORT}`);
 });

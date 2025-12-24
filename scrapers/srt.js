@@ -143,55 +143,83 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   console.log('📍 URL comunicaciones:', page.url());
   
-  // Click en BUSCAR usando Puppeteer directamente
-  console.log('🔍 Buscando botón BUSCAR...');
+  // Screenshot antes del click
+  await page.screenshot({ path: '/tmp/antes_buscar.png', fullPage: true });
+  console.log('📸 Screenshot antes guardado');
   
-  // Esperar a que aparezca el botón
-  await page.waitForSelector('input.btn-success, button.btn-success, input[value="BUSCAR"]', { timeout: 5000 }).catch(() => {});
-  
-  // Hacer click con Puppeteer y esperar respuesta
-  try {
-    const btnHandle = await page.$('input.btn-success, input[value="BUSCAR"], button.btn-success');
-    if (btnHandle) {
-      console.log('🔍 Encontré botón, clickeando...');
-      await Promise.all([
-        page.waitForResponse(response => response.url().includes('Comunicacion'), { timeout: 15000 }).catch(() => {}),
-        btnHandle.click()
-      ]);
-      console.log('🔍 Click realizado');
-    } else {
-      console.log('⚠️ No encontré botón BUSCAR');
-    }
-  } catch (e) {
-    console.log('⚠️ Error click:', e.message);
-  }
-  
-  // Esperar que cargue contenido
-  await delay(5000);
-  
-  // Esperar tabla
-  await page.waitForSelector('table tbody tr', { timeout: 10000 }).catch(() => {
-    console.log('⚠️ Timeout esperando tabla');
+  // Debug: ver qué elementos hay
+  const formInfo = await page.evaluate(() => {
+    const forms = document.querySelectorAll('form');
+    const inputs = document.querySelectorAll('input');
+    const buttons = document.querySelectorAll('button, input[type="submit"], input[type="button"]');
+    
+    return {
+      forms: forms.length,
+      formActions: Array.from(forms).map(f => f.action),
+      inputs: inputs.length,
+      buttons: Array.from(buttons).map(b => ({ 
+        tag: b.tagName, 
+        type: b.type, 
+        value: b.value, 
+        id: b.id,
+        name: b.name,
+        class: b.className 
+      }))
+    };
   });
   
-  await delay(2000);
+  console.log('📍 Form info:', JSON.stringify(formInfo, null, 2));
   
-  // Debug
+  // Buscar y hacer click en BUSCAR con submit del form
+  console.log('🔍 Intentando submit del formulario...');
+  
+  const submitResult = await page.evaluate(() => {
+    // Buscar el botón BUSCAR
+    const buscarBtn = document.querySelector('input[value="BUSCAR"], input.btn-success, button.btn-success');
+    if (!buscarBtn) return { error: 'No encontré botón BUSCAR' };
+    
+    // Buscar el form padre
+    const form = buscarBtn.closest('form');
+    if (form) {
+      // Submit del form
+      form.submit();
+      return { method: 'form.submit', formId: form.id, formAction: form.action };
+    } else {
+      // Click directo
+      buscarBtn.click();
+      return { method: 'click', btnId: buscarBtn.id };
+    }
+  });
+  
+  console.log('📍 Submit result:', JSON.stringify(submitResult));
+  
+  // Esperar navegación después del submit
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(e => {
+    console.log('⚠️ No hubo navegación después de submit:', e.message);
+  });
+  
+  await delay(5000);
+  
+  // Screenshot después
+  await page.screenshot({ path: '/tmp/despues_buscar.png', fullPage: true });
+  console.log('📸 Screenshot después guardado');
+  
+  // Debug después
   const debug = await page.evaluate(() => {
     return {
       url: window.location.href,
       tables: document.querySelectorAll('table').length,
       tbodyRows: document.querySelectorAll('table tbody tr').length,
       allTr: document.querySelectorAll('tr').length,
-      pageText: document.body.innerText.substring(0, 800)
+      pageText: document.body.innerText.substring(0, 1200)
     };
   });
   
-  console.log('📍 Debug - URL:', debug.url);
+  console.log('📍 Debug después - URL:', debug.url);
   console.log('📍 Debug - tables:', debug.tables, 'tbody tr:', debug.tbodyRows, 'all tr:', debug.allTr);
-  console.log('📍 Texto página:', debug.pageText.substring(0, 400));
+  console.log('📍 Texto:', debug.pageText.substring(0, 600));
   
-  // Scrapear comunicaciones
+  // Scrapear
   const comunicaciones = await page.evaluate(() => {
     const results = [];
     const rows = document.querySelectorAll('table tbody tr, table tr');
@@ -200,7 +228,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 5) continue;
       
-      // Buscar traID
       let traID = null;
       const rowHtml = row.outerHTML;
       const match = rowHtml.match(/traID=(\d+)/i);
@@ -222,9 +249,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
-  if (comunicaciones.length > 0) {
-    console.log('📨 Primera:', JSON.stringify(comunicaciones[0]));
-  }
   
   return comunicaciones;
 }

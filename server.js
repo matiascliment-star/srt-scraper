@@ -27,8 +27,110 @@ function parseFechaSrt(fechaStr) {
   return new Date(`${anio}-${mes}-${dia}T${hora}:${min}:00`);
 }
 
+// Normalizar número SRT a formato "numero/año"
+function normalizarNumeroSrt(numero) {
+  if (!numero) return null;
+  // Quitar prefijos como "CABA /", "/ ", etc
+  let limpio = numero.replace(/^(CABA|MATANZA|LOMAS|QUILMES|MORON|SAN MARTIN|LA PLATA|AVELLANEDA)?\s*\/?\s*/i, '').trim();
+  // Cambiar guiones por barras
+  limpio = limpio.replace(/-/g, '/');
+  // Extraer numero/año
+  const match = limpio.match(/(\d+)\s*\/\s*(\d+)/);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v6.4' });
+  res.json({ status: 'ok', service: 'SRT Scraper v6.5' });
+});
+
+// VINCULAR CASOS CON EXPEDIENTES SRT (OID)
+app.post('/srt/vincular-casos', async (req, res) => {
+  const { usuario, password } = req.body;
+  
+  if (!usuario || !password) {
+    return res.status(400).json({ error: 'Faltan credenciales' });
+  }
+  
+  const stats = { casosEncontrados: 0, casosVinculados: 0, casosSinMatch: 0, errores: [] };
+  
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    const loginOk = await loginYNavegarSRT(page, usuario, password);
+    if (!loginOk) {
+      await browser.close();
+      return res.status(401).json({ error: 'Login fallido' });
+    }
+    
+    await navegarAExpedientes(page);
+    const expedientesSrt = await obtenerExpedientes(page);
+    await browser.close();
+    
+    console.log(`📋 ${expedientesSrt.length} expedientes en SRT`);
+    
+    // Crear mapa de expedientes por número normalizado
+    const mapaSrt = {};
+    for (const exp of expedientesSrt) {
+      const nroNorm = normalizarNumeroSrt(exp.nro);
+      if (nroNorm) {
+        mapaSrt[nroNorm] = exp;
+      }
+    }
+    
+    // Obtener casos sin vincular
+    const { data: casos, error: errorCasos } = await supabase
+      .from('casos_srt')
+      .select('id, numero_srt')
+      .is('srt_expediente_oid', null)
+      .not('numero_srt', 'is', null);
+    
+    if (errorCasos) {
+      return res.status(500).json({ error: errorCasos.message });
+    }
+    
+    stats.casosEncontrados = casos.length;
+    console.log(`📋 ${casos.length} casos sin vincular`);
+    
+    for (const caso of casos) {
+      const nroNorm = normalizarNumeroSrt(caso.numero_srt);
+      console.log(`  Caso ${caso.id}: "${caso.numero_srt}" -> "${nroNorm}"`);
+      
+      if (nroNorm && mapaSrt[nroNorm]) {
+        const exp = mapaSrt[nroNorm];
+        const { error } = await supabase
+          .from('casos_srt')
+          .update({ 
+            srt_expediente_oid: exp.oid,
+            url_pdf_expediente: `https://srt-scraper-production.up.railway.app/srt/expediente-pdf/${exp.oid}`
+          })
+          .eq('id', caso.id);
+        
+        if (error) {
+          stats.errores.push({ caso: caso.id, error: error.message });
+        } else {
+          stats.casosVinculados++;
+          console.log(`  ✅ Vinculado con OID ${exp.oid}`);
+        }
+      } else {
+        stats.casosSinMatch++;
+        console.log(`  ❌ Sin match`);
+      }
+    }
+    
+    console.log('📊 Resumen:', stats);
+    res.json({ success: true, stats });
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // DESCARGAR PDF DEL EXPEDIENTE COMPLETO
@@ -85,7 +187,6 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
     }
     
     const pdfBuffer = Buffer.from(pdfData.data, 'base64');
-    
     console.log('📥 PDF obtenido:', pdfBuffer.length, 'bytes');
     
     res.setHeader('Content-Type', 'application/pdf');
@@ -171,7 +272,6 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
   };
   
   try {
-    // Obtener casos vinculados de Supabase
     const { data: casosVinculados, error: errorCasos } = await supabase
       .from('casos_srt')
       .select('id, srt_expediente_oid, numero_srt')
@@ -271,14 +371,6 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
           await delay(500);
         }
         
-        // Actualizar URL del PDF del expediente en casos_srt
-        await supabase
-          .from('casos_srt')
-          .update({ 
-            url_pdf_expediente: `https://srt-scraper-production.up.railway.app/srt/expediente-pdf/${caso.srt_expediente_oid}`
-          })
-          .eq('id', caso.id);
-        
       } catch (expError) {
         console.log(`❌ Error en caso ${caso.numero_srt}:`, expError.message);
         stats.errores.push({ caso: caso.numero_srt, error: expError.message });
@@ -319,5 +411,5 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 SRT Scraper v6.4 en puerto ${PORT}`);
+  console.log(`🚀 SRT Scraper v6.5 en puerto ${PORT}`);
 });

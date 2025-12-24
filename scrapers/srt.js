@@ -137,72 +137,74 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Ir a la página de comunicaciones filtrada por expediente
   const url = `${SRT_URLS.comunicaciones}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
+  await delay(3000);
   
   console.log('📍 URL comunicaciones:', page.url());
   
-  // Clickear el botón BUSCAR
+  // Clickear el botón BUSCAR - probar varias formas
   console.log('🔍 Clickeando BUSCAR...');
+  
   const clicked = await page.evaluate(() => {
-    const buttons = document.querySelectorAll('button, input[type="submit"], a.btn');
-    for (const btn of buttons) {
-      if (btn.innerText.includes('BUSCAR') || btn.value === 'BUSCAR') {
-        btn.click();
-        return true;
+    // Buscar por texto BUSCAR
+    const allElements = document.querySelectorAll('button, input[type="submit"], input[type="button"], a');
+    for (const el of allElements) {
+      const text = (el.innerText || el.value || '').toUpperCase();
+      if (text.includes('BUSCAR')) {
+        console.log('Found BUSCAR button:', el.tagName, el.className);
+        el.click();
+        return { found: true, tag: el.tagName, class: el.className };
       }
     }
-    // Buscar por ID común
-    const buscarBtn = document.querySelector('#btnBuscar, [id*="Buscar"], [name*="Buscar"]');
-    if (buscarBtn) {
-      buscarBtn.click();
-      return true;
-    }
-    return false;
+    return { found: false };
   });
   
-  console.log('📍 Click BUSCAR:', clicked);
+  console.log('📍 Click BUSCAR:', JSON.stringify(clicked));
   
-  // Esperar que cargue la tabla
-  await delay(5000);
+  // Esperar más tiempo para que cargue
+  await delay(8000);
   
-  // Esperar a que aparezca la tabla con resultados
-  await page.waitForSelector('table tbody tr, .grid-row', { timeout: 10000 }).catch(() => {
-    console.log('⚠️ No se encontró tabla con resultados');
+  // Debug: ver qué hay en la página ahora
+  const debug = await page.evaluate(() => {
+    const tables = document.querySelectorAll('table');
+    const rows = document.querySelectorAll('table tbody tr');
+    return {
+      tables: tables.length,
+      rows: rows.length,
+      bodyPreview: document.body.innerText.substring(0, 800)
+    };
   });
   
-  // Scrapear las comunicaciones de la tabla
+  console.log('📍 Debug después de BUSCAR - tables:', debug.tables, 'rows:', debug.rows);
+  console.log('📍 Body preview:', debug.bodyPreview.substring(0, 400));
+  
+  // Scrapear las comunicaciones
   const comunicaciones = await page.evaluate(() => {
     const results = [];
     const rows = document.querySelectorAll('table tbody tr');
-    
-    console.log('Filas encontradas:', rows.length);
     
     for (const row of rows) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 5) continue;
       
-      // Buscar el link de detalle (la lupa)
-      const detalleLink = row.querySelector('a[href*="DetalleComunicacion"], a[onclick*="Detalle"], a img[src*="lupa"], a i, a svg');
+      // Buscar traID en la fila
       let traID = null;
-      let detalleHref = null;
+      const rowHtml = row.innerHTML;
+      const match = rowHtml.match(/traID=(\d+)/);
+      if (match) traID = match[1];
       
-      // Buscar en el link o en el onclick de la fila
-      const linkElement = row.querySelector('a[href*="traID"]') || row.querySelector('a');
-      if (linkElement) {
-        detalleHref = linkElement.getAttribute('href') || '';
-        const onclick = linkElement.getAttribute('onclick') || row.getAttribute('onclick') || '';
-        const match = (detalleHref + onclick).match(/traID=(\d+)/);
-        if (match) traID = match[1];
-      }
+      // También buscar en onclick
+      const onclick = row.getAttribute('onclick') || '';
+      const onclickMatch = onclick.match(/traID=(\d+)/);
+      if (onclickMatch) traID = onclickMatch[1];
       
-      // También buscar en todo el HTML de la fila
-      if (!traID) {
-        const rowHtml = row.innerHTML;
-        const match = rowHtml.match(/traID=(\d+)/);
-        if (match) traID = match[1];
+      // Buscar en links
+      const links = row.querySelectorAll('a');
+      for (const link of links) {
+        const href = link.getAttribute('href') || '';
+        const hrefMatch = href.match(/traID=(\d+)/);
+        if (hrefMatch) traID = hrefMatch[1];
       }
       
       results.push({
@@ -213,8 +215,7 @@ async function obtenerComunicaciones(page, expedienteOid) {
         tipoComunicacion: cells[4]?.innerText.trim(),
         estado: cells[5]?.innerText.trim(),
         fechaUltEstado: cells[6]?.innerText.trim(),
-        traID,
-        detalleHref
+        traID
       });
     }
     
@@ -223,7 +224,7 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
   if (comunicaciones.length > 0) {
-    console.log('📨 Primera comunicación:', JSON.stringify(comunicaciones[0]));
+    console.log('📨 Primera:', JSON.stringify(comunicaciones[0]));
   }
   
   return comunicaciones;
@@ -259,7 +260,6 @@ async function obtenerDetalleComunicacion(page, traID) {
     const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
     if (detalleMatch) result.detalle = detalleMatch[1].trim();
     
-    // Buscar archivos adjuntos
     const downloadLinks = document.querySelectorAll('a[href*="Download.aspx"]');
     for (const link of downloadLinks) {
       const href = link.getAttribute('href');

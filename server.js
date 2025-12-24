@@ -38,7 +38,7 @@ async function buscarCasoPorNumeroSrt(numeroSrt) {
   return null;
 }
 
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'srt-scraper', version: '4.0' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'srt-scraper', version: '4.2' }));
 
 // TEST: Ver comunicaciones de un expediente
 app.post('/srt/test-comunicaciones', async (req, res) => {
@@ -57,7 +57,6 @@ app.post('/srt/test-comunicaciones', async (req, res) => {
     await navegarAExpedientes(page);
     const expedientes = await obtenerExpedientes(page);
     
-    // Usar el expedienteOid proporcionado o el primero
     const oid = expedienteOid || expedientes[0]?.oid;
     if (!oid) return res.json({ success: false, error: 'No hay expedientes' });
     
@@ -65,77 +64,25 @@ app.post('/srt/test-comunicaciones', async (req, res) => {
     
     // Si encontramos comunicaciones, obtener detalle de la primera
     let detalle = null;
-    if (comunicaciones.comunicaciones.length > 0) {
-      const traID = comunicaciones.comunicaciones[0].traID;
-      if (traID) {
-        detalle = await obtenerDetalleComunicacion(page, traID);
+    let pdf = null;
+    
+    if (comunicaciones && comunicaciones.length > 0 && comunicaciones[0].traID) {
+      detalle = await obtenerDetalleComunicacion(page, comunicaciones[0].traID);
+      
+      // Intentar descargar el primer PDF
+      if (detalle.archivosAdjuntos && detalle.archivosAdjuntos.length > 0) {
+        pdf = await descargarPdf(page, detalle.archivosAdjuntos[0]);
+        pdf.base64 = pdf.base64 ? pdf.base64.substring(0, 100) + '...' : null; // Truncar para respuesta
       }
     }
     
     res.json({ 
       success: true, 
       expedienteOid: oid,
-      comunicaciones,
-      detalleEjemplo: detalle
-    });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: error.message });
-  } finally {
-    await browser.close();
-  }
-});
-
-// TEST: Descargar un PDF
-app.post('/srt/test-pdf', async (req, res) => {
-  const { usuario, password, expedienteOid } = req.body;
-  if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
-  
-  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
-  
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    
-    const success = await loginYNavegarSRT(page, usuario, password);
-    if (!success) return res.json({ success: false, error: 'No se pudo acceder a SRT' });
-    
-    await navegarAExpedientes(page);
-    const expedientes = await obtenerExpedientes(page);
-    
-    const oid = expedienteOid || expedientes[0]?.oid;
-    const comunicaciones = await obtenerComunicaciones(page, oid);
-    
-    if (comunicaciones.comunicaciones.length === 0) {
-      return res.json({ success: false, error: 'No hay comunicaciones' });
-    }
-    
-    // Buscar primera comunicación con traID
-    let detalle = null;
-    for (const com of comunicaciones.comunicaciones) {
-      if (com.traID) {
-        detalle = await obtenerDetalleComunicacion(page, com.traID);
-        if (detalle.archivosAdjuntos.length > 0) break;
-      }
-    }
-    
-    if (!detalle || detalle.archivosAdjuntos.length === 0) {
-      return res.json({ success: false, error: 'No hay archivos adjuntos', detalle });
-    }
-    
-    // Descargar el primer PDF
-    const archivo = detalle.archivosAdjuntos[0];
-    const pdf = await descargarPdf(page, archivo);
-    
-    res.json({ 
-      success: true,
-      archivo,
-      pdf: {
-        size: pdf.size,
-        type: pdf.type,
-        error: pdf.error,
-        base64Preview: pdf.base64?.substring(0, 100)
-      }
+      totalComunicaciones: comunicaciones ? comunicaciones.length : 0,
+      comunicaciones: comunicaciones ? comunicaciones.slice(0, 5) : [], // Solo primeras 5
+      detalleEjemplo: detalle,
+      pdfEjemplo: pdf
     });
   } catch (error) {
     console.error('Error:', error);
@@ -203,4 +150,4 @@ app.post('/srt/test-matching', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log('🚀 SRT Scraper v4.0 en puerto ' + PORT); });
+app.listen(PORT, () => { console.log('🚀 SRT Scraper v4.2 en puerto ' + PORT); });

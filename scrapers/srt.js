@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
-  comunicacionesListado: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesListado.aspx',
+  comunicacionesFiltro: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
   detalleComunicacion: 'https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx'
 };
@@ -88,20 +88,27 @@ async function obtenerExpedientes(page) {
 }
 
 async function obtenerComunicaciones(page, expedienteOid) {
-  const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
+  // Ir al frameset con el filtro - esto establece el contexto correcto
+  const filtroUrl = `${SRT_URLS.comunicacionesFiltro}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
+  await page.goto(filtroUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(2000);
   
-  // Verificar que la página esté activa
-  try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  } catch (e) {
-    console.log('⚠️ Error navegando, reintentando...');
-    await delay(2000);
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  // Esperar a que cargue el frame con los resultados
+  const frames = page.frames();
+  let listaFrame = null;
+  
+  for (const frame of frames) {
+    const url = frame.url();
+    if (url.includes('ComunicacionesListado')) {
+      listaFrame = frame;
+      break;
+    }
   }
   
-  await delay(1000);
+  // Si no hay frame, buscar en la página principal
+  const targetFrame = listaFrame || page.mainFrame();
   
-  const resultado = await page.evaluate(() => {
+  const resultado = await targetFrame.evaluate(() => {
     const comunicaciones = [];
     const rows = document.querySelectorAll('table tbody tr');
     
@@ -127,6 +134,7 @@ async function obtenerComunicaciones(page, expedienteOid) {
       });
     }
     
+    // Buscar total del expediente específico
     const totalText = document.body.innerText;
     const totalMatch = totalText.match(/Total Consulta:\s*(\d+)/);
     const totalReal = totalMatch ? parseInt(totalMatch[1]) : comunicaciones.length;

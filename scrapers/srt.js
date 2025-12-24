@@ -25,7 +25,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function loginYNavegarSRT(page, cuit, password) {
   console.log('🔐 Yendo directo a e-Servicios SRT...');
   
-  // Ir directo a e-Servicios, va a redirigir a AFIP para login
   await page.goto(SRT_URLS.eServiciosHome, { waitUntil: 'networkidle2', timeout: 60000 });
   
   console.log('📍 URL:', page.url());
@@ -34,7 +33,6 @@ async function loginYNavegarSRT(page, cuit, password) {
   if (page.url().includes('afip.gob.ar')) {
     console.log('📍 En AFIP, haciendo login...');
     
-    // Ingresar CUIT
     await page.waitForSelector(AFIP_SELECTORS.inputCuit, { visible: true, timeout: 10000 });
     await page.type(AFIP_SELECTORS.inputCuit, cuit, { delay: 50 });
     await delay(500);
@@ -46,7 +44,6 @@ async function loginYNavegarSRT(page, cuit, password) {
     
     await delay(1000);
     
-    // Ingresar password
     await page.waitForSelector(AFIP_SELECTORS.inputPassword, { visible: true, timeout: 10000 });
     await page.type(AFIP_SELECTORS.inputPassword, password, { delay: 50 });
     await delay(500);
@@ -61,28 +58,91 @@ async function loginYNavegarSRT(page, cuit, password) {
   
   console.log('📍 Después de login:', page.url());
   
-  // Debería estar en e-Servicios SRT ahora
-  if (page.url().includes('srt.gob.ar')) {
-    console.log('✅ Login exitoso, en e-Servicios SRT');
-    
-    // Ir a expedientes
-    await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
-    console.log('📍 URL expedientes:', page.url());
-    
-    await delay(2000);
-    
-    return !page.url().includes('ErrorValidate');
+  // Debería estar en e-Servicios SRT
+  if (!page.url().includes('srt.gob.ar')) {
+    console.log('❌ No llegamos a SRT');
+    return false;
   }
   
-  console.log('❌ No llegamos a SRT');
-  return false;
+  console.log('✅ En e-Servicios SRT');
+  
+  // Scrollear hasta Patrocinio Letrado
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await delay(1000);
+  
+  console.log('📍 Buscando Patrocinio Letrado...');
+  
+  // Click en "VER OPCIONES" de Patrocinio Letrado
+  const clickedVerOpciones = await page.evaluate(() => {
+    const cards = document.querySelectorAll('h5, h4, h3, .card-title, div');
+    for (const card of cards) {
+      if (card.innerText && card.innerText.includes('Patrocinio Letrado')) {
+        // Buscar el botón VER OPCIONES cerca
+        const parent = card.closest('.card, .panel, section, div[class*="card"], div[class*="panel"]') || card.parentElement.parentElement;
+        if (parent) {
+          const btn = parent.querySelector('button, a');
+          if (btn && btn.innerText.includes('VER OPCIONES')) {
+            btn.click();
+            return { found: true, text: 'VER OPCIONES' };
+          }
+          // Buscar cualquier botón
+          const anyBtn = parent.querySelector('button, a.btn, [role="button"]');
+          if (anyBtn) {
+            anyBtn.click();
+            return { found: true, text: anyBtn.innerText };
+          }
+        }
+      }
+    }
+    
+    // Plan B: buscar directamente el botón VER OPCIONES cerca de "Patrocinio"
+    const allButtons = document.querySelectorAll('button, a.btn');
+    for (const btn of allButtons) {
+      const rect = btn.getBoundingClientRect();
+      if (btn.innerText.includes('VER OPCIONES') && rect.top > 400) {
+        btn.scrollIntoView();
+        btn.click();
+        return { found: true, text: 'VER OPCIONES plan B' };
+      }
+    }
+    
+    return { found: false };
+  });
+  
+  console.log('📍 Click VER OPCIONES:', JSON.stringify(clickedVerOpciones));
+  
+  await delay(2000);
+  
+  // Click en "Expedientes Médicos Laborales"
+  const clickedExpedientes = await page.evaluate(() => {
+    const links = document.querySelectorAll('a');
+    for (const link of links) {
+      if (link.innerText.includes('Expedientes') || link.href.includes('Expedientes')) {
+        link.click();
+        return { found: true, text: link.innerText, href: link.href };
+      }
+    }
+    return { found: false };
+  });
+  
+  console.log('📍 Click Expedientes:', JSON.stringify(clickedExpedientes));
+  
+  if (clickedExpedientes.found) {
+    await delay(2000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+  }
+  
+  console.log('📍 URL final:', page.url());
+  await delay(2000);
+  
+  return page.url().includes('Expedientes') && !page.url().includes('ErrorValidate');
 }
 
 async function obtenerExpedientes(page) {
   console.log('📋 Obteniendo expedientes...');
   console.log('📍 URL:', page.url());
   
-  if (page.url().includes('ErrorValidate') || !page.url().includes('srt.gob.ar')) {
+  if (page.url().includes('ErrorValidate') || !page.url().includes('Expedientes')) {
     console.log('❌ Sesión no válida');
     return [];
   }

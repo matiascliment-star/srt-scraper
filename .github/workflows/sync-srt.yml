@@ -1,0 +1,23 @@
+name: Sync SRT
+
+on:
+  schedule:
+    # Todos los días a las 8:00 AM Argentina (11:00 UTC)
+    - cron: '0 11 * * *'
+  workflow_dispatch: # Para correrlo manualmente
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Vincular casos nuevos
+        run: |
+          curl -X POST https://srt-scraper-production.up.railway.app/srt/vincular-casos \
+            -H "Content-Type: application/json" \
+            -d '{"usuario":"${{ secrets.SRT_USER }}","password":"${{ secrets.SRT_PASS }}"}'
+      
+      - name: Importar comunicaciones
+        run: |
+          curl -X POST https://srt-scraper-production.up.railway.app/srt/importar-comunicaciones \
+            -H "Content-Type: application/json" \
+            -d '{"usuario":"${{ secrets.SRT_USER }}","password":"${{ secrets.SRT_PASS }}","limit":500}'

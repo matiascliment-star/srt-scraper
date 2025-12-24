@@ -162,71 +162,100 @@ async function obtenerComunicaciones(page, expedienteOid) {
 async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
   console.log('📄 Obteniendo detalle traID:', traID);
   
-  const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=${catID}&traIDTIPOACTOR=${tipoActor}`;
-  console.log('📄 URL detalle:', url);
-  
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(3000);
-  
-  // Debug: ver contenido de la página
-  const debug = await page.evaluate(() => {
-    return {
-      url: window.location.href,
-      title: document.title,
-      bodyText: document.body.innerText.substring(0, 1500),
-      allLinks: Array.from(document.querySelectorAll('a')).map(a => ({
-        href: a.getAttribute('href'),
-        text: a.innerText.substring(0, 50)
-      })).slice(0, 20),
-      tables: document.querySelectorAll('table').length
-    };
-  });
-  
-  console.log('📄 URL actual:', debug.url);
-  console.log('📄 Texto página:', debug.bodyText.substring(0, 600));
-  console.log('📄 Links encontrados:', JSON.stringify(debug.allLinks.slice(0, 5)));
-  
-  const detalle = await page.evaluate(() => {
-    const result = {
-      tipoComunicacion: '',
-      fecha: '',
-      remitente: '',
-      detalle: '',
-      archivosAdjuntos: []
-    };
-    
-    const body = document.body.innerText;
-    
-    const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
-    if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
-    
-    const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
-    if (fechaMatch) result.fecha = fechaMatch[1].trim();
-    
-    const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
-    if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
-    
-    const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
-    if (detalleMatch) result.detalle = detalleMatch[1].trim();
-    
-    // Buscar links de descarga
-    const allLinks = document.querySelectorAll('a');
-    for (const link of allLinks) {
-      const href = link.getAttribute('href') || '';
-      if (href.includes('Download') || href.includes('download') || href.includes('.pdf')) {
-        const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + (href.startsWith('/') ? '' : '/MiVentanilla/') + href;
-        result.archivosAdjuntos.push({
-          href: fullHref,
-          text: link.innerText.trim()
-        });
+  // Hacer click en la lupa de esa comunicación
+  const clicked = await page.evaluate((targetTraID) => {
+    const images = document.querySelectorAll('img[onclick*="DetalleComunicacion"]');
+    for (const img of images) {
+      const onclick = img.getAttribute('onclick') || '';
+      if (onclick.includes(targetTraID)) {
+        img.click();
+        return { clicked: true, onclick };
       }
     }
-    
-    return result;
+    return { clicked: false, total: images.length };
+  }, traID);
+  
+  console.log('📄 Click en lupa:', JSON.stringify(clicked));
+  
+  if (!clicked.clicked) {
+    console.log('⚠️ No se encontró la lupa para traID:', traID);
+    return { error: 'Lupa no encontrada' };
+  }
+  
+  // Esperar que aparezca el modal/iframe
+  await delay(3000);
+  
+  // Buscar iframe o modal
+  const frames = page.frames();
+  console.log('📄 Frames encontrados:', frames.length);
+  
+  // Debug: ver qué hay en la página después del click
+  const debug = await page.evaluate(() => {
+    return {
+      modals: document.querySelectorAll('.modal, [class*="modal"], [role="dialog"]').length,
+      iframes: document.querySelectorAll('iframe').length,
+      iframeSrcs: Array.from(document.querySelectorAll('iframe')).map(f => f.src),
+      newDivs: document.querySelectorAll('div[style*="display: block"], div[style*="visibility: visible"]').length,
+      bodyText: document.body.innerText.substring(0, 500)
+    };
   });
   
+  console.log('📄 Debug después de click:', JSON.stringify(debug));
+  
+  // Si hay iframes, buscar el que tiene el detalle
+  let detalle = { tipoComunicacion: '', fecha: '', remitente: '', detalle: '', archivosAdjuntos: [] };
+  
+  if (debug.iframes > 0) {
+    for (const frame of frames) {
+      const frameUrl = frame.url();
+      console.log('📄 Frame URL:', frameUrl);
+      
+      if (frameUrl.includes('DetalleComunicacion') || frameUrl.includes('Detalle')) {
+        console.log('📄 Encontré frame de detalle!');
+        
+        detalle = await frame.evaluate(() => {
+          const result = {
+            tipoComunicacion: '',
+            fecha: '',
+            remitente: '',
+            detalle: '',
+            archivosAdjuntos: [],
+            bodyText: document.body.innerText.substring(0, 1000)
+          };
+          
+          const body = document.body.innerText;
+          
+          const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
+          if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
+          
+          const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
+          if (fechaMatch) result.fecha = fechaMatch[1].trim();
+          
+          const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
+          if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
+          
+          const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
+          if (detalleMatch) result.detalle = detalleMatch[1].trim();
+          
+          const downloadLinks = document.querySelectorAll('a[href*="Download"]');
+          for (const link of downloadLinks) {
+            const href = link.getAttribute('href');
+            result.archivosAdjuntos.push({
+              href: href,
+              text: link.innerText.trim()
+            });
+          }
+          
+          return result;
+        });
+        
+        break;
+      }
+    }
+  }
+  
   console.log('📄 Detalle encontrado:', detalle.tipoComunicacion);
-  console.log('📄 Adjuntos:', detalle.archivosAdjuntos.length);
+  console.log('📄 Adjuntos:', detalle.archivosAdjuntos?.length || 0);
   
   return detalle;
 }

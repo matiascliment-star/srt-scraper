@@ -28,10 +28,135 @@ function parseFechaSrt(fechaStr) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v6.2' });
+  res.json({ status: 'ok', service: 'SRT Scraper v6.3' });
 });
 
-// IMPORTACIÓN MASIVA - SIN DESCARGAR PDFs (RÁPIDO)
+// DESCARGAR PDF DEL EXPEDIENTE COMPLETO
+app.get('/srt/expediente-pdf/:oid', async (req, res) => {
+  const { oid } = req.params;
+  
+  console.log('📥 Descargando PDF expediente OID:', oid);
+  
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    // Login
+    const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
+    if (!loginOk) {
+      await browser.close();
+      return res.status(500).json({ error: 'No se pudo conectar a SRT' });
+    }
+    
+    // Navegar a expedientes para establecer sesión
+    await navegarAExpedientes(page);
+    await delay(2000);
+    
+    // Llamar a ObtenerPDF
+    const pdfData = await page.evaluate(async (expedienteOid) => {
+      try {
+        const res = await fetch('https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerPDF', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+          body: JSON.stringify({ OID: parseInt(expedienteOid) }),
+          credentials: 'include'
+        });
+        
+        if (!res.ok) return { error: `HTTP ${res.status}` };
+        
+        const data = await res.json();
+        return { success: true, data: data.d };
+      } catch (e) {
+        return { error: e.message };
+      }
+    }, oid);
+    
+    await browser.close();
+    
+    if (pdfData.error) {
+      return res.status(500).json({ error: pdfData.error });
+    }
+    
+    if (!pdfData.data) {
+      return res.status(404).json({ error: 'No se encontró el PDF' });
+    }
+    
+    // El PDF viene en base64
+    const pdfBuffer = Buffer.from(pdfData.data, 'base64');
+    
+    console.log('📥 PDF obtenido:', pdfBuffer.length, 'bytes');
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="expediente_${oid}.pdf"`);
+    res.send(pdfBuffer);
+    
+  } catch (error) {
+    console.error('Error:', error);
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DESCARGAR PDF DE ADJUNTO DE COMUNICACIÓN
+app.get('/srt/pdf/:adjuntoId', async (req, res) => {
+  const { adjuntoId } = req.params;
+  
+  const { data: adjunto, error } = await supabase
+    .from('adjuntos_comunicacion_srt')
+    .select('*')
+    .eq('id', adjuntoId)
+    .single();
+  
+  if (error || !adjunto) {
+    return res.status(404).json({ error: 'Adjunto no encontrado' });
+  }
+  
+  if (adjunto.url_publica) {
+    return res.redirect(adjunto.url_publica);
+  }
+  
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    
+    const page = await browser.newPage();
+    
+    const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
+    if (!loginOk) {
+      await browser.close();
+      return res.status(500).json({ error: 'No se pudo conectar a SRT' });
+    }
+    
+    await navegarAExpedientes(page);
+    
+    const pdfData = await descargarPdf(page, { href: adjunto.url_descarga, nombre: adjunto.nombre });
+    await browser.close();
+    
+    if (!pdfData.isPdf) {
+      return res.status(500).json({ error: 'No se pudo obtener el PDF' });
+    }
+    
+    const pdfBuffer = Buffer.from(pdfData.base64, 'base64');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${adjunto.nombre}"`);
+    res.send(pdfBuffer);
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// IMPORTACIÓN MASIVA DE COMUNICACIONES
 app.post('/srt/importar-comunicaciones', async (req, res) => {
   const { usuario, password, limit = 50 } = req.body;
   
@@ -96,10 +221,8 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
             continue;
           }
           
-          // Obtener detalle (para sacar los adjuntos)
           const detalle = await obtenerDetalleComunicacion(page, com.traID, com.catID, com.tipoActor);
           
-          // Insertar comunicación
           const { data: nuevaCom, error: errorCom } = await supabase
             .from('comunicaciones_srt')
             .insert({
@@ -126,7 +249,6 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
           stats.comunicacionesNuevas++;
           console.log(`  ✅ Comunicación ${com.traID}`);
           
-          // Guardar adjuntos SIN DESCARGAR - solo la URL
           for (const adjunto of detalle.archivosAdjuntos || []) {
             await supabase
               .from('adjuntos_comunicacion_srt')
@@ -141,7 +263,7 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
             stats.adjuntosRegistrados++;
           }
           
-          await delay(500); // Rate limiting mínimo
+          await delay(500);
         }
         
       } catch (expError) {
@@ -159,66 +281,6 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
     console.error('Error:', error);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message, stats });
-  }
-});
-
-// DESCARGAR PDF ON-DEMAND
-app.get('/srt/pdf/:adjuntoId', async (req, res) => {
-  const { adjuntoId } = req.params;
-  
-  // Obtener datos del adjunto
-  const { data: adjunto, error } = await supabase
-    .from('adjuntos_comunicacion_srt')
-    .select('*')
-    .eq('id', adjuntoId)
-    .single();
-  
-  if (error || !adjunto) {
-    return res.status(404).json({ error: 'Adjunto no encontrado' });
-  }
-  
-  // Si ya está en storage, redirigir
-  if (adjunto.url_publica) {
-    return res.redirect(adjunto.url_publica);
-  }
-  
-  // Descargar del SRT
-  let browser;
-  try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
-    
-    const page = await browser.newPage();
-    
-    // Login
-    const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
-    if (!loginOk) {
-      await browser.close();
-      return res.status(500).json({ error: 'No se pudo conectar a SRT' });
-    }
-    
-    // Navegar para establecer sesión
-    await navegarAExpedientes(page);
-    
-    // Descargar PDF
-    const pdfData = await descargarPdf(page, { href: adjunto.url_descarga, nombre: adjunto.nombre });
-    await browser.close();
-    
-    if (!pdfData.isPdf) {
-      return res.status(500).json({ error: 'No se pudo obtener el PDF' });
-    }
-    
-    // Enviar PDF directamente
-    const pdfBuffer = Buffer.from(pdfData.base64, 'base64');
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${adjunto.nombre}"`);
-    res.send(pdfBuffer);
-    
-  } catch (error) {
-    if (browser) await browser.close();
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -244,5 +306,5 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 SRT Scraper v6.2 en puerto ${PORT}`);
+  console.log(`🚀 SRT Scraper v6.3 en puerto ${PORT}`);
 });

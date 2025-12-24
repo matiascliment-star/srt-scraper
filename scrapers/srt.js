@@ -139,73 +139,72 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   const url = `${SRT_URLS.comunicaciones}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(3000);
+  await delay(2000);
   
   console.log('📍 URL comunicaciones:', page.url());
   
-  // Clickear el botón BUSCAR - probar varias formas
-  console.log('🔍 Clickeando BUSCAR...');
+  // Click en BUSCAR usando Puppeteer directamente
+  console.log('🔍 Buscando botón BUSCAR...');
   
-  const clicked = await page.evaluate(() => {
-    // Buscar por texto BUSCAR
-    const allElements = document.querySelectorAll('button, input[type="submit"], input[type="button"], a');
-    for (const el of allElements) {
-      const text = (el.innerText || el.value || '').toUpperCase();
-      if (text.includes('BUSCAR')) {
-        console.log('Found BUSCAR button:', el.tagName, el.className);
-        el.click();
-        return { found: true, tag: el.tagName, class: el.className };
-      }
+  // Esperar a que aparezca el botón
+  await page.waitForSelector('input.btn-success, button.btn-success, input[value="BUSCAR"]', { timeout: 5000 }).catch(() => {});
+  
+  // Hacer click con Puppeteer y esperar respuesta
+  try {
+    const btnHandle = await page.$('input.btn-success, input[value="BUSCAR"], button.btn-success');
+    if (btnHandle) {
+      console.log('🔍 Encontré botón, clickeando...');
+      await Promise.all([
+        page.waitForResponse(response => response.url().includes('Comunicacion'), { timeout: 15000 }).catch(() => {}),
+        btnHandle.click()
+      ]);
+      console.log('🔍 Click realizado');
+    } else {
+      console.log('⚠️ No encontré botón BUSCAR');
     }
-    return { found: false };
+  } catch (e) {
+    console.log('⚠️ Error click:', e.message);
+  }
+  
+  // Esperar que cargue contenido
+  await delay(5000);
+  
+  // Esperar tabla
+  await page.waitForSelector('table tbody tr', { timeout: 10000 }).catch(() => {
+    console.log('⚠️ Timeout esperando tabla');
   });
   
-  console.log('📍 Click BUSCAR:', JSON.stringify(clicked));
+  await delay(2000);
   
-  // Esperar más tiempo para que cargue
-  await delay(8000);
-  
-  // Debug: ver qué hay en la página ahora
+  // Debug
   const debug = await page.evaluate(() => {
-    const tables = document.querySelectorAll('table');
-    const rows = document.querySelectorAll('table tbody tr');
     return {
-      tables: tables.length,
-      rows: rows.length,
-      bodyPreview: document.body.innerText.substring(0, 800)
+      url: window.location.href,
+      tables: document.querySelectorAll('table').length,
+      tbodyRows: document.querySelectorAll('table tbody tr').length,
+      allTr: document.querySelectorAll('tr').length,
+      pageText: document.body.innerText.substring(0, 800)
     };
   });
   
-  console.log('📍 Debug después de BUSCAR - tables:', debug.tables, 'rows:', debug.rows);
-  console.log('📍 Body preview:', debug.bodyPreview.substring(0, 400));
+  console.log('📍 Debug - URL:', debug.url);
+  console.log('📍 Debug - tables:', debug.tables, 'tbody tr:', debug.tbodyRows, 'all tr:', debug.allTr);
+  console.log('📍 Texto página:', debug.pageText.substring(0, 400));
   
-  // Scrapear las comunicaciones
+  // Scrapear comunicaciones
   const comunicaciones = await page.evaluate(() => {
     const results = [];
-    const rows = document.querySelectorAll('table tbody tr');
+    const rows = document.querySelectorAll('table tbody tr, table tr');
     
     for (const row of rows) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 5) continue;
       
-      // Buscar traID en la fila
+      // Buscar traID
       let traID = null;
-      const rowHtml = row.innerHTML;
-      const match = rowHtml.match(/traID=(\d+)/);
+      const rowHtml = row.outerHTML;
+      const match = rowHtml.match(/traID=(\d+)/i);
       if (match) traID = match[1];
-      
-      // También buscar en onclick
-      const onclick = row.getAttribute('onclick') || '';
-      const onclickMatch = onclick.match(/traID=(\d+)/);
-      if (onclickMatch) traID = onclickMatch[1];
-      
-      // Buscar en links
-      const links = row.querySelectorAll('a');
-      for (const link of links) {
-        const href = link.getAttribute('href') || '';
-        const hrefMatch = href.match(/traID=(\d+)/);
-        if (hrefMatch) traID = hrefMatch[1];
-      }
       
       results.push({
         fechaNotificacion: cells[0]?.innerText.trim(),

@@ -114,25 +114,7 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   console.log('📍 URL actual:', page.url());
   
-  // Debug: ver HTML de la primera fila con datos
-  const debugHtml = await page.evaluate(() => {
-    const rows = document.querySelectorAll('table tbody tr');
-    for (const row of rows) {
-      const cells = row.querySelectorAll('td');
-      if (cells.length >= 5) {
-        return {
-          rowHtml: row.outerHTML.substring(0, 2000),
-          lastCellHtml: cells[cells.length - 1]?.innerHTML
-        };
-      }
-    }
-    return { error: 'No rows found' };
-  });
-  
-  console.log('📍 HTML primera fila:', debugHtml.rowHtml?.substring(0, 500));
-  console.log('📍 HTML última celda (detalle):', debugHtml.lastCellHtml);
-  
-  // Scrapear comunicaciones
+  // Scrapear comunicaciones - buscar DetalleComunicacion(traID,catID,tipoActor)
   const comunicaciones = await page.evaluate(() => {
     const results = [];
     const rows = document.querySelectorAll('table tbody tr');
@@ -142,44 +124,16 @@ async function obtenerComunicaciones(page, expedienteOid) {
       if (cells.length < 5) continue;
       
       let traID = null;
+      let catID = null;
+      let tipoActor = null;
       
-      // Buscar en toda la fila
+      // Buscar DetalleComunicacion(traID,catID,tipoActor) en el onclick
       const rowHtml = row.outerHTML;
-      let match = rowHtml.match(/traID=(\d+)/i);
-      if (match) traID = match[1];
-      
-      // Buscar en onclick de la fila
-      if (!traID) {
-        const onclick = row.getAttribute('onclick') || '';
-        match = onclick.match(/traID=(\d+)/i);
-        if (match) traID = match[1];
-      }
-      
-      // Buscar en links dentro de la fila
-      if (!traID) {
-        const links = row.querySelectorAll('a');
-        for (const link of links) {
-          const href = link.getAttribute('href') || '';
-          const onclick = link.getAttribute('onclick') || '';
-          match = (href + onclick).match(/traID=(\d+)/i);
-          if (match) {
-            traID = match[1];
-            break;
-          }
-        }
-      }
-      
-      // Buscar en botones
-      if (!traID) {
-        const buttons = row.querySelectorAll('button, input[type="button"]');
-        for (const btn of buttons) {
-          const onclick = btn.getAttribute('onclick') || '';
-          match = onclick.match(/traID=(\d+)/i);
-          if (match) {
-            traID = match[1];
-            break;
-          }
-        }
+      const match = rowHtml.match(/DetalleComunicacion\((\d+),(\d+),(\d+)\)/);
+      if (match) {
+        traID = match[1];
+        catID = match[2];
+        tipoActor = match[3];
       }
       
       results.push({
@@ -190,7 +144,9 @@ async function obtenerComunicaciones(page, expedienteOid) {
         tipoComunicacion: cells[4]?.innerText.trim(),
         estado: cells[5]?.innerText.trim(),
         fechaUltEstado: cells[6]?.innerText.trim(),
-        traID
+        traID,
+        catID,
+        tipoActor
       });
     }
     
@@ -198,14 +154,17 @@ async function obtenerComunicaciones(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
+  if (comunicaciones.length > 0) {
+    console.log('📨 Primera con traID:', comunicaciones[0].traID);
+  }
   
   return comunicaciones;
 }
 
-async function obtenerDetalleComunicacion(page, traID) {
+async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
   console.log('📄 Obteniendo detalle traID:', traID);
   
-  const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=2&traIDTIPOACTOR=1`;
+  const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=${catID}&traIDTIPOACTOR=${tipoActor}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
   

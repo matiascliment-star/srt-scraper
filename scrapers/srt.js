@@ -64,39 +64,13 @@ async function loginYNavegarSRT(page, cuit, password) {
 }
 
 async function navegarAExpedientes(page) {
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await delay(1000);
+  console.log('📍 Navegando a Expedientes...');
   
-  await page.evaluate(() => {
-    const cards = document.querySelectorAll('h5, h4, h3, .card-title, div');
-    for (const card of cards) {
-      if (card.innerText && card.innerText.includes('Patrocinio Letrado')) {
-        const parent = card.closest('.card, .panel, section, div[class*="card"], div[class*="panel"]') || card.parentElement.parentElement;
-        if (parent) {
-          const btn = parent.querySelector('button, a');
-          if (btn) { btn.click(); return true; }
-        }
-      }
-    }
-    return false;
-  });
-  
+  // Ir directo a la URL de expedientes
+  await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
   
-  await page.evaluate(() => {
-    const links = document.querySelectorAll('a');
-    for (const link of links) {
-      if (link.innerText.includes('Expedientes') || link.href.includes('Expedientes')) {
-        link.click();
-        return true;
-      }
-    }
-    return false;
-  });
-  
-  await delay(2000);
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-  
+  console.log('📍 URL actual:', page.url());
   return page.url().includes('Expedientes');
 }
 
@@ -137,7 +111,7 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Ir directo a ComunicacionesListado.aspx - esta es la página que ya tiene los resultados
+  // Ir directo a ComunicacionesListado con el idExpediente
   const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
   console.log('📍 Yendo a:', url);
   
@@ -149,16 +123,14 @@ async function obtenerComunicaciones(page, expedienteOid) {
   // Debug
   const debug = await page.evaluate(() => {
     return {
-      url: window.location.href,
       tables: document.querySelectorAll('table').length,
-      tbodyRows: document.querySelectorAll('table tbody tr').length,
-      allTr: document.querySelectorAll('tr').length,
-      pageText: document.body.innerText.substring(0, 1200)
+      rows: document.querySelectorAll('table tr').length,
+      text: document.body.innerText.substring(0, 800)
     };
   });
   
-  console.log('📍 Debug - tables:', debug.tables, 'tbody tr:', debug.tbodyRows, 'all tr:', debug.allTr);
-  console.log('📍 Texto:', debug.pageText.substring(0, 600));
+  console.log('📍 Debug - tables:', debug.tables, 'rows:', debug.rows);
+  console.log('📍 Texto:', debug.text.substring(0, 400));
   
   // Scrapear comunicaciones
   const comunicaciones = await page.evaluate(() => {
@@ -190,19 +162,16 @@ async function obtenerComunicaciones(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
-  if (comunicaciones.length > 0) {
-    console.log('📨 Primera:', JSON.stringify(comunicaciones[0]));
-  }
   
   return comunicaciones;
 }
 
 async function obtenerDetalleComunicacion(page, traID) {
-  console.log('📄 Obteniendo detalle de comunicación traID:', traID);
+  console.log('📄 Obteniendo detalle traID:', traID);
   
   const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=2&traIDTIPOACTOR=1`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(3000);
+  await delay(2000);
   
   const detalle = await page.evaluate(() => {
     const result = {
@@ -243,13 +212,13 @@ async function obtenerDetalleComunicacion(page, traID) {
     return result;
   });
   
-  console.log('📄 Detalle:', detalle.tipoComunicacion, '- Adjuntos:', detalle.archivosAdjuntos.length);
+  console.log('📄 Adjuntos:', detalle.archivosAdjuntos.length);
   
   return detalle;
 }
 
 async function descargarPdf(page, archivoAdjunto) {
-  console.log('⬇️ Descargando PDF:', archivoAdjunto.nombre);
+  console.log('⬇️ Descargando:', archivoAdjunto.nombre);
   
   const pdfData = await page.evaluate(async (url) => {
     try {

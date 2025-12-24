@@ -67,7 +67,7 @@ async function navegarAExpedientes(page) {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await delay(1000);
   
-  const clickedVerOpciones = await page.evaluate(() => {
+  await page.evaluate(() => {
     const cards = document.querySelectorAll('h5, h4, h3, .card-title, div');
     for (const card of cards) {
       if (card.innerText && card.innerText.includes('Patrocinio Letrado')) {
@@ -137,53 +137,91 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Navegar a la página de comunicaciones del expediente
   const url = `${SRT_URLS.comunicaciones}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
+  
+  // Esperar más tiempo para que cargue el contenido dinámico
+  await delay(5000);
+  
+  // Esperar a que aparezca alguna tabla o grid
+  await page.waitForSelector('table, .grid, [class*="grid"], [class*="list"]', { timeout: 10000 }).catch(() => {
+    console.log('⚠️ No se encontró tabla/grid');
+  });
   
   console.log('📍 URL comunicaciones:', page.url());
   
-  // Scrapear la tabla de comunicaciones
+  // Debug: ver qué hay en la página
+  const debug = await page.evaluate(() => {
+    return {
+      title: document.title,
+      bodyLength: document.body.innerHTML.length,
+      tables: document.querySelectorAll('table').length,
+      grids: document.querySelectorAll('[class*="grid"]').length,
+      rows: document.querySelectorAll('tr').length,
+      links: document.querySelectorAll('a').length,
+      // Ver texto visible
+      visibleText: document.body.innerText.substring(0, 1500)
+    };
+  });
+  
+  console.log('📍 Debug página:', JSON.stringify({
+    tables: debug.tables,
+    grids: debug.grids, 
+    rows: debug.rows,
+    links: debug.links
+  }));
+  console.log('📍 Texto visible:', debug.visibleText.substring(0, 500));
+  
+  // Scrapear comunicaciones
   const comunicaciones = await page.evaluate(() => {
-    const rows = document.querySelectorAll('table tbody tr, .grid-row, [class*="row"]');
     const results = [];
     
-    // Buscar todos los links que vayan a DetalleComunicacion
-    const links = document.querySelectorAll('a[href*="DetalleComunicacion"]');
+    // Buscar links a DetalleComunicacion
+    const links = document.querySelectorAll('a[href*="DetalleComunicacion"], a[href*="detalle"], a[onclick*="Detalle"]');
+    console.log('Links DetalleComunicacion:', links.length);
     
     for (const link of links) {
-      const href = link.getAttribute('href');
-      const urlParams = new URLSearchParams(href.split('?')[1]);
-      const traID = urlParams.get('traID');
+      const href = link.getAttribute('href') || '';
+      const onclick = link.getAttribute('onclick') || '';
       
-      // Buscar la fila padre para obtener más datos
-      const row = link.closest('tr') || link.closest('[class*="row"]') || link.parentElement;
-      const cells = row ? row.querySelectorAll('td, [class*="col"]') : [];
-      
-      const textos = Array.from(cells).map(c => c.innerText.trim());
+      let traID = null;
+      const traIDMatch = (href + onclick).match(/traID=(\d+)/);
+      if (traIDMatch) traID = traIDMatch[1];
       
       results.push({
         traID,
         href,
-        textos,
-        linkText: link.innerText.trim()
+        onclick,
+        text: link.innerText.trim()
       });
     }
     
-    // También buscar en el HTML general por patrones
+    // Buscar también en filas de tabla
+    const rows = document.querySelectorAll('tr');
+    for (const row of rows) {
+      const onclick = row.getAttribute('onclick') || '';
+      const traIDMatch = onclick.match(/traID=(\d+)/);
+      if (traIDMatch) {
+        results.push({
+          traID: traIDMatch[1],
+          source: 'row-onclick',
+          text: row.innerText.substring(0, 100)
+        });
+      }
+    }
+    
+    // Buscar traIDs en cualquier parte del HTML
     const html = document.body.innerHTML;
-    const traIDMatches = html.match(/traID=(\d+)/g) || [];
+    const allTraIDs = [...new Set((html.match(/traID[=:](\d+)/gi) || []).map(m => m.match(/\d+/)[0]))];
     
     return {
       comunicaciones: results,
-      traIDsEncontrados: [...new Set(traIDMatches)],
-      htmlPreview: document.body.innerText.substring(0, 2000)
+      allTraIDs
     };
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.comunicaciones.length);
-  console.log('📨 traIDs en HTML:', comunicaciones.traIDsEncontrados.length);
+  console.log('📨 traIDs en HTML:', comunicaciones.allTraIDs);
   
   return comunicaciones;
 }
@@ -193,55 +231,48 @@ async function obtenerDetalleComunicacion(page, traID) {
   
   const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=2&traIDTIPOACTOR=1`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
+  await delay(3000);
   
-  // Scrapear el detalle
   const detalle = await page.evaluate(() => {
     const result = {
       tipoComunicacion: '',
       fecha: '',
       remitente: '',
       detalle: '',
-      archivosAdjuntos: [],
-      movimientos: []
+      archivosAdjuntos: []
     };
     
-    // Buscar campos del detalle
     const body = document.body.innerText;
     
-    // Tipo de Comunicación
     const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
     if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
     
-    // Fecha
     const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
     if (fechaMatch) result.fecha = fechaMatch[1].trim();
     
-    // Remitente
     const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
     if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
     
-    // Detalle
     const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
     if (detalleMatch) result.detalle = detalleMatch[1].trim();
     
-    // Buscar archivos adjuntos (links de descarga)
     const downloadLinks = document.querySelectorAll('a[href*="Download.aspx"]');
     for (const link of downloadLinks) {
       const href = link.getAttribute('href');
-      const urlParams = new URLSearchParams(href.split('?')[1]);
+      const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + (href.startsWith('/') ? '' : '/') + href;
+      const urlParams = new URLSearchParams(fullHref.split('?')[1] || '');
       result.archivosAdjuntos.push({
         id: urlParams.get('id'),
         idTipoRef: urlParams.get('idTipoRef'),
         nombre: urlParams.get('nombre') || link.innerText.trim(),
-        href: href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + href
+        href: fullHref
       });
     }
     
     return result;
   });
   
-  console.log('📄 Archivos adjuntos:', detalle.archivosAdjuntos.length);
+  console.log('📄 Detalle:', detalle.tipoComunicacion, '- Adjuntos:', detalle.archivosAdjuntos.length);
   
   return detalle;
 }
@@ -249,7 +280,6 @@ async function obtenerDetalleComunicacion(page, traID) {
 async function descargarPdf(page, archivoAdjunto) {
   console.log('⬇️ Descargando PDF:', archivoAdjunto.nombre);
   
-  // Descargar el PDF como base64
   const pdfData = await page.evaluate(async (url) => {
     try {
       const res = await fetch(url, { credentials: 'include' });

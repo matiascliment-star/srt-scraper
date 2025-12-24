@@ -200,6 +200,9 @@ async function obtenerMovimientos(page, expedienteOid) {
       return [];
     }
     
+    // LOG COMPLETO DEL PRIMER MOVIMIENTO
+    console.log('📦 ESTRUCTURA MOVIMIENTO:', JSON.stringify(data.d[0], null, 2));
+    
     console.log('✅ ' + data.d.length + ' movimientos');
     
     return data.d.map(mov => ({

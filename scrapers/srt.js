@@ -3,8 +3,9 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
-  comunicacionesFiltro: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
-  apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos'
+  comunicacionesListado: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesListado.aspx',
+  apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
+  detalleComunicacion: 'https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx'
 };
 
 const AFIP_SELECTORS = {
@@ -105,59 +106,18 @@ async function obtenerExpedientes(page) {
   }));
 }
 
-async function obtenerComunicacionesYDetalle(page, expedienteOid) {
+async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Ir al frameset principal
-  const url = `${SRT_URLS.comunicacionesFiltro}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
-  console.log('📍 Yendo a:', url);
-  
+  const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
+  await delay(3000);
   
-  // Ver los frames
-  const allFrames = page.frames();
-  console.log('📍 Frames totales:', allFrames.length);
+  console.log('📍 URL actual:', page.url());
   
-  for (const frame of allFrames) {
-    console.log('📍 Frame:', frame.url());
-  }
-  
-  // Click en BUSCAR si existe
-  try {
-    await page.click('#btnBuscar');
-    console.log('📍 Click en BUSCAR');
-    await delay(5000);
-  } catch (e) {
-    console.log('📍 No se encontró btnBuscar, continuando...');
-  }
-  
-  // Ver frames después del click
-  const framesAfter = page.frames();
-  console.log('📍 Frames después de buscar:', framesAfter.length);
-  for (const frame of framesAfter) {
-    console.log('📍 Frame:', frame.url());
-  }
-  
-  // Buscar el frame con la lista
-  let listaFrame = null;
-  for (const frame of framesAfter) {
-    if (frame.url().includes('ComunicacionesListado')) {
-      listaFrame = frame;
-      break;
-    }
-  }
-  
-  if (!listaFrame) {
-    console.log('⚠️ No se encontró frame de lista');
-    // Intentar scrapear del frame principal
-    listaFrame = page.mainFrame();
-  }
-  
-  // Scrapear comunicaciones del frame
-  const comunicaciones = await listaFrame.evaluate(() => {
+  const comunicaciones = await page.evaluate(() => {
     const results = [];
-    const rows = document.querySelectorAll('table tbody tr, table tr');
+    const rows = document.querySelectorAll('table tbody tr');
     
     for (const row of rows) {
       const cells = row.querySelectorAll('td');
@@ -193,6 +153,9 @@ async function obtenerComunicacionesYDetalle(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
+  if (comunicaciones.length > 0) {
+    console.log('📨 Primera con traID:', comunicaciones[0].traID);
+  }
   
   return comunicaciones;
 }
@@ -200,108 +163,83 @@ async function obtenerComunicacionesYDetalle(page, expedienteOid) {
 async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
   console.log('📄 Obteniendo detalle traID:', traID);
   
-  // Buscar el frame con la lista y hacer click en la lupa
-  const allFrames = page.frames();
-  let listaFrame = null;
+  // Hacer fetch del HTML del detalle (con doble t en ttraIDTIPOACTOR como en el HAR)
+  const detalleUrl = `${SRT_URLS.detalleComunicacion}?traID=${traID}&catID=${catID}&ttraIDTIPOACTOR=${tipoActor}`;
+  console.log('📄 Fetch URL:', detalleUrl);
   
-  for (const frame of allFrames) {
-    if (frame.url().includes('ComunicacionesListado') || frame.url().includes('Comunicacion')) {
-      listaFrame = frame;
-      break;
-    }
-  }
-  
-  if (!listaFrame) {
-    listaFrame = page.mainFrame();
-  }
-  
-  // Click en la lupa
-  const clicked = await listaFrame.evaluate((targetTraID) => {
-    const images = document.querySelectorAll('img[onclick*="DetalleComunicacion"]');
-    for (const img of images) {
-      const onclick = img.getAttribute('onclick') || '';
-      if (onclick.includes(targetTraID)) {
-        img.click();
-        return { clicked: true, onclick };
+  const detalle = await page.evaluate(async (url) => {
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      
+      const html = await res.text();
+      
+      // Parsear el HTML
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      
+      const result = {
+        tipoComunicacion: '',
+        fecha: '',
+        remitente: '',
+        detalle: '',
+        archivosAdjuntos: [],
+        htmlPreview: html.substring(0, 500)
+      };
+      
+      const body = doc.body?.innerText || html;
+      
+      const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
+      if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
+      
+      const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
+      if (fechaMatch) result.fecha = fechaMatch[1].trim();
+      
+      const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
+      if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
+      
+      const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
+      if (detalleMatch) result.detalle = detalleMatch[1].trim();
+      
+      // Buscar links de descarga
+      const downloadLinks = doc.querySelectorAll('a[href*="Download"]');
+      for (const link of downloadLinks) {
+        const href = link.getAttribute('href');
+        const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar/MiVentanilla/' + href;
+        
+        // Parsear parámetros
+        const urlParams = new URLSearchParams(fullHref.split('?')[1] || '');
+        
+        result.archivosAdjuntos.push({
+          id: urlParams.get('id'),
+          idTipoRef: urlParams.get('idTipoRef'),
+          nombre: urlParams.get('nombre') || link.innerText.trim(),
+          href: fullHref
+        });
       }
+      
+      return result;
+    } catch (e) {
+      return { error: e.message };
     }
-    return { clicked: false, total: images.length };
-  }, traID);
+  }, detalleUrl);
   
-  console.log('📄 Click en lupa:', JSON.stringify(clicked));
-  
-  await delay(3000);
-  
-  // Buscar el frame de detalle que se abrió
-  const framesAfterClick = page.frames();
-  console.log('📄 Frames después de click:', framesAfterClick.length);
-  
-  let detalleFrame = null;
-  for (const frame of framesAfterClick) {
-    const frameUrl = frame.url();
-    console.log('📄 Checking frame:', frameUrl);
-    if (frameUrl.includes('DetalleComunicacion')) {
-      detalleFrame = frame;
-      console.log('📄 Encontré frame de detalle!');
-      break;
-    }
+  console.log('📄 Tipo:', detalle.tipoComunicacion);
+  console.log('📄 Adjuntos:', detalle.archivosAdjuntos?.length || 0);
+  if (detalle.archivosAdjuntos?.length > 0) {
+    console.log('📄 Primer adjunto:', JSON.stringify(detalle.archivosAdjuntos[0]));
   }
-  
-  if (!detalleFrame) {
-    console.log('⚠️ No se encontró frame de detalle');
-    return { error: 'No se encontró frame de detalle' };
-  }
-  
-  // Scrapear el detalle del frame
-  const detalle = await detalleFrame.evaluate(() => {
-    const result = {
-      tipoComunicacion: '',
-      fecha: '',
-      remitente: '',
-      detalle: '',
-      archivosAdjuntos: [],
-      bodyText: document.body.innerText.substring(0, 1000)
-    };
-    
-    const body = document.body.innerText;
-    
-    const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
-    if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
-    
-    const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
-    if (fechaMatch) result.fecha = fechaMatch[1].trim();
-    
-    const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
-    if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
-    
-    const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
-    if (detalleMatch) result.detalle = detalleMatch[1].trim();
-    
-    const downloadLinks = document.querySelectorAll('a[href*="Download"]');
-    for (const link of downloadLinks) {
-      const href = link.getAttribute('href');
-      result.archivosAdjuntos.push({
-        href: href,
-        text: link.innerText.trim()
-      });
-    }
-    
-    return result;
-  });
-  
-  console.log('📄 Detalle:', detalle.tipoComunicacion);
-  console.log('📄 Body preview:', detalle.bodyText?.substring(0, 300));
-  console.log('📄 Adjuntos:', detalle.archivosAdjuntos.length);
   
   return detalle;
 }
 
 async function descargarPdf(page, archivoAdjunto) {
-  console.log('⬇️ Descargando:', archivoAdjunto.nombre || archivoAdjunto.href);
+  const url = archivoAdjunto.href;
+  console.log('⬇️ Descargando:', archivoAdjunto.nombre, 'desde', url);
   
-  const pdfData = await page.evaluate(async (url) => {
+  const pdfData = await page.evaluate(async (downloadUrl) => {
     try {
-      const res = await fetch(url, { credentials: 'include' });
+      const res = await fetch(downloadUrl, { credentials: 'include' });
       if (!res.ok) return { error: `HTTP ${res.status}` };
       
       const blob = await res.blob();
@@ -317,14 +255,11 @@ async function descargarPdf(page, archivoAdjunto) {
     } catch (e) {
       return { error: e.message };
     }
-  }, archivoAdjunto.href);
+  }, url);
+  
+  console.log('⬇️ Resultado:', pdfData.error || `${pdfData.size} bytes, tipo: ${pdfData.type}`);
   
   return pdfData;
-}
-
-// Función legacy para compatibilidad
-async function obtenerComunicaciones(page, expedienteOid) {
-  return obtenerComunicacionesYDetalle(page, expedienteOid);
 }
 
 module.exports = {
@@ -332,7 +267,6 @@ module.exports = {
   navegarAExpedientes,
   obtenerExpedientes,
   obtenerComunicaciones,
-  obtenerComunicacionesYDetalle,
   obtenerDetalleComunicacion,
   descargarPdf,
   parseDotNetDate,

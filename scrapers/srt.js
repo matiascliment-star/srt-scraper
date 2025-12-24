@@ -147,17 +147,24 @@ async function obtenerComunicaciones(page, expedienteOid) {
   await page.waitForSelector('#btnBuscar', { visible: true, timeout: 5000 });
   console.log('🔍 Botón #btnBuscar encontrado');
   
-  // Click con Puppeteer y esperar navegación a ComunicacionesListado.aspx
+  // Click sin esperar navegación
   console.log('🔍 Clickeando #btnBuscar...');
+  await page.click('#btnBuscar');
   
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-    page.click('#btnBuscar')
+  // Esperar que aparezca la tabla o cambio de URL
+  console.log('🔍 Esperando resultados...');
+  
+  // Esperar cualquier respuesta de red o cambio en DOM
+  await Promise.race([
+    page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {}),
+    page.waitForSelector('table tbody tr', { timeout: 15000 }).catch(() => {}),
+    page.waitForFunction(() => document.querySelectorAll('table tr').length > 1, { timeout: 15000 }).catch(() => {}),
+    delay(10000)
   ]);
   
-  console.log('📍 Nueva URL:', page.url());
-  
   await delay(3000);
+  
+  console.log('📍 URL después de click:', page.url());
   
   // Debug
   const debug = await page.evaluate(() => {

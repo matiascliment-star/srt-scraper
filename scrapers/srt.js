@@ -200,55 +200,59 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
 }
 
 async function descargarPdf(page, archivoAdjunto) {
-  const url = archivoAdjunto.href;
+  const downloadUrl = archivoAdjunto.href;
   console.log('⬇️ Descargando:', archivoAdjunto.nombre);
   
-  // Usar page.goto y capturar la respuesta directamente
-  const client = await page.target().createCDPSession();
-  await client.send('Page.setDownloadBehavior', {
-    behavior: 'deny' // Prevenir descarga automática
-  });
+  // Primero navegar a la página de detalle para establecer el referer correcto
+  const detalleUrl = `${SRT_URLS.detalleComunicacion}?traID=0&catID=2&ttraIDTIPOACTOR=1`;
+  await page.goto(detalleUrl, { waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+  await delay(1000);
   
-  // Interceptar la respuesta
-  let pdfBuffer = null;
-  let contentType = null;
-  
-  const responseHandler = async (response) => {
-    if (response.url().includes('Download.aspx')) {
-      contentType = response.headers()['content-type'];
-      console.log('⬇️ Content-Type interceptado:', contentType);
-      try {
-        pdfBuffer = await response.buffer();
-      } catch (e) {
-        console.log('⬇️ Error al obtener buffer:', e.message);
+  // Ahora hacer fetch con el referer correcto ya establecido
+  const pdfData = await page.evaluate(async (url) => {
+    try {
+      const res = await fetch(url, { 
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/pdf,application/octet-stream,*/*'
+        }
+      });
+      
+      const contentType = res.headers.get('content-type') || '';
+      const contentDisposition = res.headers.get('content-disposition') || '';
+      
+      if (!res.ok) return { error: `HTTP ${res.status}`, contentType };
+      
+      const arrayBuffer = await res.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      
+      // Verificar si es PDF (empieza con %PDF)
+      const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+      
+      // Convertir a base64
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
       }
+      const base64 = btoa(binary);
+      
+      return {
+        base64,
+        size: bytes.length,
+        type: contentType,
+        isPdf,
+        contentDisposition,
+        firstBytes: Array.from(bytes.slice(0, 10)).map(b => b.toString(16)).join(' ')
+      };
+    } catch (e) {
+      return { error: e.message };
     }
-  };
+  }, downloadUrl);
   
-  page.on('response', responseHandler);
+  console.log('⬇️ Resultado:', pdfData.size, 'bytes, tipo:', pdfData.type);
+  console.log('⬇️ Es PDF:', pdfData.isPdf, '- Primeros bytes:', pdfData.firstBytes);
   
-  try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await delay(2000);
-  } catch (e) {
-    // Puede dar error si es descarga directa
-    console.log('⬇️ Navegación:', e.message);
-  }
-  
-  page.off('response', responseHandler);
-  
-  if (pdfBuffer) {
-    const base64 = pdfBuffer.toString('base64');
-    console.log('⬇️ PDF capturado:', pdfBuffer.length, 'bytes');
-    return {
-      base64,
-      size: pdfBuffer.length,
-      type: contentType || 'application/pdf'
-    };
-  }
-  
-  console.log('⚠️ No se pudo capturar el PDF');
-  return { error: 'No se pudo capturar el PDF' };
+  return pdfData;
 }
 
 module.exports = {

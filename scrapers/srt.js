@@ -29,7 +29,6 @@ async function loginYNavegarSRT(page, cuit, password) {
   
   console.log('📍 URL:', page.url());
   
-  // Si redirigió a AFIP, hacer login
   if (page.url().includes('afip.gob.ar')) {
     console.log('📍 En AFIP, haciendo login...');
     
@@ -58,7 +57,6 @@ async function loginYNavegarSRT(page, cuit, password) {
   
   console.log('📍 Después de login:', page.url());
   
-  // Debería estar en e-Servicios SRT
   if (!page.url().includes('srt.gob.ar')) {
     console.log('❌ No llegamos a SRT');
     return false;
@@ -66,18 +64,15 @@ async function loginYNavegarSRT(page, cuit, password) {
   
   console.log('✅ En e-Servicios SRT');
   
-  // Scrollear hasta Patrocinio Letrado
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await delay(1000);
   
   console.log('📍 Buscando Patrocinio Letrado...');
   
-  // Click en "VER OPCIONES" de Patrocinio Letrado
   const clickedVerOpciones = await page.evaluate(() => {
     const cards = document.querySelectorAll('h5, h4, h3, .card-title, div');
     for (const card of cards) {
       if (card.innerText && card.innerText.includes('Patrocinio Letrado')) {
-        // Buscar el botón VER OPCIONES cerca
         const parent = card.closest('.card, .panel, section, div[class*="card"], div[class*="panel"]') || card.parentElement.parentElement;
         if (parent) {
           const btn = parent.querySelector('button, a');
@@ -85,7 +80,6 @@ async function loginYNavegarSRT(page, cuit, password) {
             btn.click();
             return { found: true, text: 'VER OPCIONES' };
           }
-          // Buscar cualquier botón
           const anyBtn = parent.querySelector('button, a.btn, [role="button"]');
           if (anyBtn) {
             anyBtn.click();
@@ -95,7 +89,6 @@ async function loginYNavegarSRT(page, cuit, password) {
       }
     }
     
-    // Plan B: buscar directamente el botón VER OPCIONES cerca de "Patrocinio"
     const allButtons = document.querySelectorAll('button, a.btn');
     for (const btn of allButtons) {
       const rect = btn.getBoundingClientRect();
@@ -113,7 +106,6 @@ async function loginYNavegarSRT(page, cuit, password) {
   
   await delay(2000);
   
-  // Click en "Expedientes Médicos Laborales"
   const clickedExpedientes = await page.evaluate(() => {
     const links = document.querySelectorAll('a');
     for (const link of links) {
@@ -180,25 +172,48 @@ async function obtenerExpedientes(page) {
 }
 
 async function obtenerMovimientos(page, expedienteOid) {
+  console.log('📥 Obteniendo movimientos para OID:', expedienteOid);
+  
   const response = await page.evaluate(async (url, oid) => {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
-      body: JSON.stringify({ idExpediente: oid })
-    });
-    return res.json();
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+        body: JSON.stringify({ idExpediente: oid })
+      });
+      const text = await res.text();
+      return { status: res.status, text };
+    } catch (e) {
+      return { error: e.message };
+    }
   }, SRT_URLS.apiIngresos, expedienteOid);
   
-  if (!response.d) return [];
+  if (response.error) {
+    console.log('❌ Error movimientos:', response.error);
+    return [];
+  }
   
-  return response.d.map(mov => ({
-    expedienteOid: mov.Ingreso.IdExpediente,
-    ingresoOid: mov.Ingreso.OID,
-    ingresoNro: mov.Ingreso.NroIngreso,
-    fecha: parseDotNetDate(mov.Ingreso.FechaInsert),
-    tipoCodigo: mov.Tipo?.valor,
-    tipoDescripcion: mov.Tipo?.nombre
-  }));
+  try {
+    const data = JSON.parse(response.text);
+    if (!data.d || data.d.length === 0) {
+      console.log('📭 Sin movimientos');
+      return [];
+    }
+    
+    console.log('✅ ' + data.d.length + ' movimientos');
+    
+    return data.d.map(mov => ({
+      expedienteOid: mov.Ingreso?.IdExpediente,
+      ingresoOid: mov.Ingreso?.OID,
+      ingresoNro: mov.Ingreso?.NroIngreso,
+      fecha: parseDotNetDate(mov.Ingreso?.FechaInsert),
+      tipoCodigo: mov.Tipo?.valor,
+      tipoDescripcion: mov.Tipo?.nombre
+    }));
+  } catch (e) {
+    console.log('❌ Parse error:', e.message, 'Response:', response.text?.substring(0, 200));
+    return [];
+  }
 }
 
 module.exports = {

@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
-  comunicacionesListado: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesListado.aspx',
+  comunicacionesFiltro: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos'
 };
 
@@ -105,18 +105,59 @@ async function obtenerExpedientes(page) {
   }));
 }
 
-async function obtenerComunicaciones(page, expedienteOid) {
+async function obtenerComunicacionesYDetalle(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
+  // Ir al frameset principal
+  const url = `${SRT_URLS.comunicacionesFiltro}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
+  console.log('📍 Yendo a:', url);
+  
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(3000);
+  await delay(2000);
   
-  console.log('📍 URL actual:', page.url());
+  // Ver los frames
+  const allFrames = page.frames();
+  console.log('📍 Frames totales:', allFrames.length);
   
-  const comunicaciones = await page.evaluate(() => {
+  for (const frame of allFrames) {
+    console.log('📍 Frame:', frame.url());
+  }
+  
+  // Click en BUSCAR si existe
+  try {
+    await page.click('#btnBuscar');
+    console.log('📍 Click en BUSCAR');
+    await delay(5000);
+  } catch (e) {
+    console.log('📍 No se encontró btnBuscar, continuando...');
+  }
+  
+  // Ver frames después del click
+  const framesAfter = page.frames();
+  console.log('📍 Frames después de buscar:', framesAfter.length);
+  for (const frame of framesAfter) {
+    console.log('📍 Frame:', frame.url());
+  }
+  
+  // Buscar el frame con la lista
+  let listaFrame = null;
+  for (const frame of framesAfter) {
+    if (frame.url().includes('ComunicacionesListado')) {
+      listaFrame = frame;
+      break;
+    }
+  }
+  
+  if (!listaFrame) {
+    console.log('⚠️ No se encontró frame de lista');
+    // Intentar scrapear del frame principal
+    listaFrame = page.mainFrame();
+  }
+  
+  // Scrapear comunicaciones del frame
+  const comunicaciones = await listaFrame.evaluate(() => {
     const results = [];
-    const rows = document.querySelectorAll('table tbody tr');
+    const rows = document.querySelectorAll('table tbody tr, table tr');
     
     for (const row of rows) {
       const cells = row.querySelectorAll('td');
@@ -152,9 +193,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
   });
   
   console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
-  if (comunicaciones.length > 0) {
-    console.log('📨 Primera con traID:', comunicaciones[0].traID);
-  }
   
   return comunicaciones;
 }
@@ -162,8 +200,23 @@ async function obtenerComunicaciones(page, expedienteOid) {
 async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
   console.log('📄 Obteniendo detalle traID:', traID);
   
-  // Hacer click en la lupa de esa comunicación
-  const clicked = await page.evaluate((targetTraID) => {
+  // Buscar el frame con la lista y hacer click en la lupa
+  const allFrames = page.frames();
+  let listaFrame = null;
+  
+  for (const frame of allFrames) {
+    if (frame.url().includes('ComunicacionesListado') || frame.url().includes('Comunicacion')) {
+      listaFrame = frame;
+      break;
+    }
+  }
+  
+  if (!listaFrame) {
+    listaFrame = page.mainFrame();
+  }
+  
+  // Click en la lupa
+  const clicked = await listaFrame.evaluate((targetTraID) => {
     const images = document.querySelectorAll('img[onclick*="DetalleComunicacion"]');
     for (const img of images) {
       const onclick = img.getAttribute('onclick') || '';
@@ -177,85 +230,68 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
   
   console.log('📄 Click en lupa:', JSON.stringify(clicked));
   
-  if (!clicked.clicked) {
-    console.log('⚠️ No se encontró la lupa para traID:', traID);
-    return { error: 'Lupa no encontrada' };
-  }
-  
-  // Esperar que aparezca el modal/iframe
   await delay(3000);
   
-  // Buscar iframe o modal
-  const frames = page.frames();
-  console.log('📄 Frames encontrados:', frames.length);
+  // Buscar el frame de detalle que se abrió
+  const framesAfterClick = page.frames();
+  console.log('📄 Frames después de click:', framesAfterClick.length);
   
-  // Debug: ver qué hay en la página después del click
-  const debug = await page.evaluate(() => {
-    return {
-      modals: document.querySelectorAll('.modal, [class*="modal"], [role="dialog"]').length,
-      iframes: document.querySelectorAll('iframe').length,
-      iframeSrcs: Array.from(document.querySelectorAll('iframe')).map(f => f.src),
-      newDivs: document.querySelectorAll('div[style*="display: block"], div[style*="visibility: visible"]').length,
-      bodyText: document.body.innerText.substring(0, 500)
-    };
-  });
-  
-  console.log('📄 Debug después de click:', JSON.stringify(debug));
-  
-  // Si hay iframes, buscar el que tiene el detalle
-  let detalle = { tipoComunicacion: '', fecha: '', remitente: '', detalle: '', archivosAdjuntos: [] };
-  
-  if (debug.iframes > 0) {
-    for (const frame of frames) {
-      const frameUrl = frame.url();
-      console.log('📄 Frame URL:', frameUrl);
-      
-      if (frameUrl.includes('DetalleComunicacion') || frameUrl.includes('Detalle')) {
-        console.log('📄 Encontré frame de detalle!');
-        
-        detalle = await frame.evaluate(() => {
-          const result = {
-            tipoComunicacion: '',
-            fecha: '',
-            remitente: '',
-            detalle: '',
-            archivosAdjuntos: [],
-            bodyText: document.body.innerText.substring(0, 1000)
-          };
-          
-          const body = document.body.innerText;
-          
-          const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
-          if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
-          
-          const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
-          if (fechaMatch) result.fecha = fechaMatch[1].trim();
-          
-          const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
-          if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
-          
-          const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
-          if (detalleMatch) result.detalle = detalleMatch[1].trim();
-          
-          const downloadLinks = document.querySelectorAll('a[href*="Download"]');
-          for (const link of downloadLinks) {
-            const href = link.getAttribute('href');
-            result.archivosAdjuntos.push({
-              href: href,
-              text: link.innerText.trim()
-            });
-          }
-          
-          return result;
-        });
-        
-        break;
-      }
+  let detalleFrame = null;
+  for (const frame of framesAfterClick) {
+    const frameUrl = frame.url();
+    console.log('📄 Checking frame:', frameUrl);
+    if (frameUrl.includes('DetalleComunicacion')) {
+      detalleFrame = frame;
+      console.log('📄 Encontré frame de detalle!');
+      break;
     }
   }
   
-  console.log('📄 Detalle encontrado:', detalle.tipoComunicacion);
-  console.log('📄 Adjuntos:', detalle.archivosAdjuntos?.length || 0);
+  if (!detalleFrame) {
+    console.log('⚠️ No se encontró frame de detalle');
+    return { error: 'No se encontró frame de detalle' };
+  }
+  
+  // Scrapear el detalle del frame
+  const detalle = await detalleFrame.evaluate(() => {
+    const result = {
+      tipoComunicacion: '',
+      fecha: '',
+      remitente: '',
+      detalle: '',
+      archivosAdjuntos: [],
+      bodyText: document.body.innerText.substring(0, 1000)
+    };
+    
+    const body = document.body.innerText;
+    
+    const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
+    if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
+    
+    const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
+    if (fechaMatch) result.fecha = fechaMatch[1].trim();
+    
+    const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
+    if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
+    
+    const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
+    if (detalleMatch) result.detalle = detalleMatch[1].trim();
+    
+    const downloadLinks = document.querySelectorAll('a[href*="Download"]');
+    for (const link of downloadLinks) {
+      const href = link.getAttribute('href');
+      result.archivosAdjuntos.push({
+        href: href,
+        text: link.innerText.trim()
+      });
+    }
+    
+    return result;
+  });
+  
+  console.log('📄 Detalle:', detalle.tipoComunicacion);
+  console.log('📄 Body preview:', detalle.bodyText?.substring(0, 300));
+  console.log('📄 Adjuntos:', detalle.archivosAdjuntos.length);
   
   return detalle;
 }
@@ -286,11 +322,17 @@ async function descargarPdf(page, archivoAdjunto) {
   return pdfData;
 }
 
+// Función legacy para compatibilidad
+async function obtenerComunicaciones(page, expedienteOid) {
+  return obtenerComunicacionesYDetalle(page, expedienteOid);
+}
+
 module.exports = {
   loginYNavegarSRT,
   navegarAExpedientes,
   obtenerExpedientes,
   obtenerComunicaciones,
+  obtenerComunicacionesYDetalle,
   obtenerDetalleComunicacion,
   descargarPdf,
   parseDotNetDate,

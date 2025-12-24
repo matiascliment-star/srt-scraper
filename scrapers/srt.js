@@ -114,7 +114,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
   
   console.log('📍 URL actual:', page.url());
   
-  // Scrapear comunicaciones - buscar DetalleComunicacion(traID,catID,tipoActor)
   const comunicaciones = await page.evaluate(() => {
     const results = [];
     const rows = document.querySelectorAll('table tbody tr');
@@ -127,7 +126,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
       let catID = null;
       let tipoActor = null;
       
-      // Buscar DetalleComunicacion(traID,catID,tipoActor) en el onclick
       const rowHtml = row.outerHTML;
       const match = rowHtml.match(/DetalleComunicacion\((\d+),(\d+),(\d+)\)/);
       if (match) {
@@ -165,8 +163,28 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
   console.log('📄 Obteniendo detalle traID:', traID);
   
   const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=${catID}&traIDTIPOACTOR=${tipoActor}`;
+  console.log('📄 URL detalle:', url);
+  
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
+  await delay(3000);
+  
+  // Debug: ver contenido de la página
+  const debug = await page.evaluate(() => {
+    return {
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 1500),
+      allLinks: Array.from(document.querySelectorAll('a')).map(a => ({
+        href: a.getAttribute('href'),
+        text: a.innerText.substring(0, 50)
+      })).slice(0, 20),
+      tables: document.querySelectorAll('table').length
+    };
+  });
+  
+  console.log('📄 URL actual:', debug.url);
+  console.log('📄 Texto página:', debug.bodyText.substring(0, 600));
+  console.log('📄 Links encontrados:', JSON.stringify(debug.allLinks.slice(0, 5)));
   
   const detalle = await page.evaluate(() => {
     const result = {
@@ -191,29 +209,30 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
     const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
     if (detalleMatch) result.detalle = detalleMatch[1].trim();
     
-    const downloadLinks = document.querySelectorAll('a[href*="Download.aspx"]');
-    for (const link of downloadLinks) {
-      const href = link.getAttribute('href');
-      const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + (href.startsWith('/') ? '' : '/MiVentanilla/') + href;
-      const urlParams = new URLSearchParams(fullHref.split('?')[1] || '');
-      result.archivosAdjuntos.push({
-        id: urlParams.get('id'),
-        idTipoRef: urlParams.get('idTipoRef'),
-        nombre: urlParams.get('nombre') || link.innerText.trim(),
-        href: fullHref
-      });
+    // Buscar links de descarga
+    const allLinks = document.querySelectorAll('a');
+    for (const link of allLinks) {
+      const href = link.getAttribute('href') || '';
+      if (href.includes('Download') || href.includes('download') || href.includes('.pdf')) {
+        const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + (href.startsWith('/') ? '' : '/MiVentanilla/') + href;
+        result.archivosAdjuntos.push({
+          href: fullHref,
+          text: link.innerText.trim()
+        });
+      }
     }
     
     return result;
   });
   
+  console.log('📄 Detalle encontrado:', detalle.tipoComunicacion);
   console.log('📄 Adjuntos:', detalle.archivosAdjuntos.length);
   
   return detalle;
 }
 
 async function descargarPdf(page, archivoAdjunto) {
-  console.log('⬇️ Descargando:', archivoAdjunto.nombre);
+  console.log('⬇️ Descargando:', archivoAdjunto.nombre || archivoAdjunto.href);
   
   const pdfData = await page.evaluate(async (url) => {
     try {

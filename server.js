@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const { loginYNavegarSRT, obtenerExpedientes, obtenerMovimientos } = require('./scrapers/srt');
+const { loginYNavegarSRT, obtenerExpedientes, obtenerMovimientos, obtenerPdfMovimiento } = require('./scrapers/srt');
 const puppeteer = require('puppeteer');
 
 const app = express();
@@ -30,7 +30,37 @@ async function buscarCasoPorNumeroSrt(numeroSrt) {
   return null;
 }
 
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'srt-scraper', version: '3.0' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'srt-scraper', version: '3.1' }));
+
+// TEST PDF
+app.post('/srt/test-pdf', async (req, res) => {
+  const { usuario, password } = req.body;
+  if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
+  
+  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+  
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    const success = await loginYNavegarSRT(page, usuario, password);
+    if (!success) return res.json({ success: false, error: 'No se pudo acceder a SRT' });
+    
+    const expedientes = await obtenerExpedientes(page);
+    if (expedientes.length === 0) return res.json({ success: false, error: 'Sin expedientes' });
+    
+    const movimientos = await obtenerMovimientos(page, expedientes[0].oid);
+    if (movimientos.length === 0) return res.json({ success: false, error: 'Sin movimientos' });
+    
+    const pdf = await obtenerPdfMovimiento(page, movimientos[0].ingresoOid);
+    
+    res.json({ success: true, expediente: expedientes[0].nro, movimiento: movimientos[0], pdf });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  } finally {
+    await browser.close();
+  }
+});
 
 app.post('/srt/expedientes', async (req, res) => {
   const { usuario, password } = req.body;
@@ -113,60 +143,18 @@ app.post('/srt/importar-movimientos-masivo', async (req, res) => {
       const movimientos = await obtenerMovimientos(page, exp.oid);
       
       for (const mov of movimientos) {
+        console.log('💾 Insertando:', { caso_srt_id: caso.id, srt_ingreso_oid: mov.ingresoOid });
         const { error } = await supabase.from('movimientos_srt').upsert({
           caso_srt_id: caso.id, srt_expediente_oid: exp.oid, srt_expediente_nro: exp.nro,
           srt_ingreso_oid: mov.ingresoOid, srt_ingreso_nro: mov.ingresoNro, fecha: mov.fecha,
           tipo_codigo: mov.tipoCodigo, tipo_descripcion: mov.tipoDescripcion, damnificado_nombre: exp.damnificadoNombre
         }, { onConflict: 'caso_srt_id,srt_ingreso_oid', ignoreDuplicates: true });
-        if (!error) stats.movimientosInsertados++;
-      }
-      await new Promise(r => setTimeout(r, 500));
-    }
-    
-    res.json({ success: true, ...stats });
-  } catch (error) {
-    res.status(500).json({ error: error.message, stats });
-  } finally {
-    await browser.close();
-  }
-});
-
-app.post('/srt/novedades-diarias', async (req, res) => {
-  const { usuario, password } = req.body;
-  if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
-  
-  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
-  const stats = { expedientesSrt: 0, conNovedades: 0, conMatch: 0, movimientosInsertados: 0, novedades: [] };
-  
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    
-    const success = await loginYNavegarSRT(page, usuario, password);
-    if (!success) return res.json({ success: false, error: 'No se pudo acceder a SRT', stats });
-    
-    const expedientes = await obtenerExpedientes(page);
-    stats.expedientesSrt = expedientes.length;
-    
-    const conNovedades = expedientes.filter(e => e.comunicacionesSinLectura > 0);
-    stats.conNovedades = conNovedades.length;
-    
-    for (const exp of conNovedades) {
-      const caso = await buscarCasoPorNumeroSrt(exp.nro);
-      if (!caso) continue;
-      
-      stats.conMatch++;
-      const movimientos = await obtenerMovimientos(page, exp.oid);
-      
-      for (const mov of movimientos) {
-        const { data: existe } = await supabase.from('movimientos_srt').select('id').eq('caso_srt_id', caso.id).eq('srt_ingreso_oid', mov.ingresoOid).single();
-        if (!existe) {
-          const { error } = await supabase.from('movimientos_srt').insert({
-            caso_srt_id: caso.id, srt_expediente_oid: exp.oid, srt_expediente_nro: exp.nro,
-            srt_ingreso_oid: mov.ingresoOid, srt_ingreso_nro: mov.ingresoNro, fecha: mov.fecha,
-            tipo_codigo: mov.tipoCodigo, tipo_descripcion: mov.tipoDescripcion, damnificado_nombre: exp.damnificadoNombre
-          });
-          if (!error) { stats.movimientosInsertados++; stats.novedades.push({ caso: caso.nombre, movimiento: mov.tipoDescripcion }); }
+        
+        if (error) {
+          console.log('❌ Error insert:', error.message);
+          stats.errores.push(error.message);
+        } else {
+          stats.movimientosInsertados++;
         }
       }
       await new Promise(r => setTimeout(r, 500));
@@ -181,4 +169,4 @@ app.post('/srt/novedades-diarias', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log('🚀 SRT Scraper v3 en puerto ' + PORT); });
+app.listen(PORT, () => { console.log('🚀 SRT Scraper v3.1 en puerto ' + PORT); });

@@ -4,7 +4,8 @@ const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
-  apiIngresos: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerIngresos'
+  apiIngresos: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerIngresos',
+  apiPdf: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerPdfIngreso'
 };
 
 const AFIP_SELECTORS = {
@@ -200,9 +201,6 @@ async function obtenerMovimientos(page, expedienteOid) {
       return [];
     }
     
-    // LOG COMPLETO DEL PRIMER MOVIMIENTO
-    console.log('📦 ESTRUCTURA MOVIMIENTO:', JSON.stringify(data.d[0], null, 2));
-    
     console.log('✅ ' + data.d.length + ' movimientos');
     
     return data.d.map(mov => ({
@@ -214,15 +212,37 @@ async function obtenerMovimientos(page, expedienteOid) {
       tipoDescripcion: mov.Tipo?.nombre
     }));
   } catch (e) {
-    console.log('❌ Parse error:', e.message, 'Response:', response.text?.substring(0, 200));
+    console.log('❌ Parse error:', e.message);
     return [];
   }
+}
+
+async function obtenerPdfMovimiento(page, ingresoOid) {
+  console.log('📄 Obteniendo PDF para ingreso OID:', ingresoOid);
+  
+  const response = await page.evaluate(async (url, oid) => {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+        body: JSON.stringify({ idIngreso: oid })
+      });
+      const text = await res.text();
+      return { status: res.status, text: text.substring(0, 500), fullLength: text.length };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }, SRT_URLS.apiPdf, ingresoOid);
+  
+  console.log('📄 PDF Response:', JSON.stringify(response));
+  return response;
 }
 
 module.exports = {
   loginYNavegarSRT,
   obtenerExpedientes,
   obtenerMovimientos,
+  obtenerPdfMovimiento,
   parseDotNetDate,
   SRT_URLS
 };

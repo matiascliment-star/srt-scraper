@@ -69,8 +69,7 @@ async function navegarAExpedientes(page) {
   console.log('📍 Navegando a Expedientes...');
   await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
-  console.log('📍 URL actual:', page.url());
-  return page.url().includes('Expedientes');
+  return true;
 }
 
 async function obtenerExpedientes(page) {
@@ -110,18 +109,13 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Ir al frameset principal primero para establecer contexto
   const filtroUrl = `${SRT_URLS.comunicacionesFiltro}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
-  console.log('📍 Yendo al frameset:', filtroUrl);
   await page.goto(filtroUrl, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
   
-  // Ahora ir a la lista
   const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(3000);
-  
-  console.log('📍 URL actual:', page.url());
   
   const comunicaciones = await page.evaluate(() => {
     const results = [];
@@ -131,9 +125,7 @@ async function obtenerComunicaciones(page, expedienteOid) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 5) continue;
       
-      let traID = null;
-      let catID = null;
-      let tipoActor = null;
+      let traID = null, catID = null, tipoActor = null;
       
       const rowHtml = row.outerHTML;
       const match = rowHtml.match(/DetalleComunicacion\((\d+),(\d+),(\d+)\)/);
@@ -151,48 +143,30 @@ async function obtenerComunicaciones(page, expedienteOid) {
         tipoComunicacion: cells[4]?.innerText.trim(),
         estado: cells[5]?.innerText.trim(),
         fechaUltEstado: cells[6]?.innerText.trim(),
-        traID,
-        catID,
-        tipoActor
+        traID, catID, tipoActor
       });
     }
-    
     return results;
   });
   
-  console.log('📨 Comunicaciones encontradas:', comunicaciones.length);
-  if (comunicaciones.length > 0) {
-    console.log('📨 Primera con traID:', comunicaciones[0].traID);
-  }
-  
+  console.log('📨 Comunicaciones:', comunicaciones.length);
   return comunicaciones;
 }
 
 async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
-  console.log('📄 Obteniendo detalle traID:', traID);
+  console.log('📄 Detalle traID:', traID);
   
   const detalleUrl = `${SRT_URLS.detalleComunicacion}?traID=${traID}&catID=${catID}&ttraIDTIPOACTOR=${tipoActor}`;
-  console.log('📄 Fetch URL:', detalleUrl);
   
   const detalle = await page.evaluate(async (url) => {
     try {
       const res = await fetch(url, { credentials: 'include' });
-      if (!res.ok) return { error: `HTTP ${res.status}` };
-      
       const html = await res.text();
-      
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
       
-      const result = {
-        tipoComunicacion: '',
-        fecha: '',
-        remitente: '',
-        detalle: '',
-        archivosAdjuntos: []
-      };
-      
-      const body = doc.body?.innerText || html;
+      const result = { tipoComunicacion: '', fecha: '', remitente: '', detalle: '', archivosAdjuntos: [] };
+      const body = doc.body?.innerText || '';
       
       const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
       if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
@@ -200,28 +174,14 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
       const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
       if (fechaMatch) result.fecha = fechaMatch[1].trim();
       
-      const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
-      if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
-      
-      const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
-      if (detalleMatch) result.detalle = detalleMatch[1].trim();
-      
-      // Buscar links de descarga
       const downloadLinks = doc.querySelectorAll('a[href*="Download"]');
       for (const link of downloadLinks) {
         const href = link.getAttribute('href');
-        
-        let fullHref;
-        if (href.startsWith('http')) {
-          fullHref = href;
-        } else if (href.startsWith('/')) {
-          fullHref = 'https://eservicios.srt.gob.ar' + href;
-        } else {
-          fullHref = 'https://eservicios.srt.gob.ar/MiVentanilla/' + href;
-        }
+        let fullHref = href.startsWith('http') ? href : 
+                       href.startsWith('/') ? 'https://eservicios.srt.gob.ar' + href :
+                       'https://eservicios.srt.gob.ar/MiVentanilla/' + href;
         
         const urlParams = new URLSearchParams(fullHref.split('?')[1] || '');
-        
         result.archivosAdjuntos.push({
           id: urlParams.get('id'),
           idTipoRef: urlParams.get('idTipoRef'),
@@ -229,67 +189,66 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
           href: fullHref
         });
       }
-      
       return result;
     } catch (e) {
       return { error: e.message };
     }
   }, detalleUrl);
   
-  console.log('📄 Tipo:', detalle.tipoComunicacion);
   console.log('📄 Adjuntos:', detalle.archivosAdjuntos?.length || 0);
-  if (detalle.archivosAdjuntos?.length > 0) {
-    console.log('📄 Primer adjunto:', JSON.stringify(detalle.archivosAdjuntos[0]));
-  }
-  
   return detalle;
 }
 
 async function descargarPdf(page, archivoAdjunto) {
   const url = archivoAdjunto.href;
   console.log('⬇️ Descargando:', archivoAdjunto.nombre);
-  console.log('⬇️ URL:', url);
   
-  // Navegar a la página del detalle primero para establecer contexto
-  // Luego descargar usando page.goto en vez de fetch
+  // Usar page.goto y capturar la respuesta directamente
+  const client = await page.target().createCDPSession();
+  await client.send('Page.setDownloadBehavior', {
+    behavior: 'deny' // Prevenir descarga automática
+  });
   
-  const pdfData = await page.evaluate(async (downloadUrl) => {
-    try {
-      const res = await fetch(downloadUrl, { 
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/pdf,*/*'
-        }
-      });
-      
-      const contentType = res.headers.get('content-type') || '';
-      console.log('Content-Type:', contentType);
-      
-      if (!res.ok) return { error: `HTTP ${res.status}` };
-      
-      const blob = await res.blob();
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({ 
-          base64: reader.result.split(',')[1],
-          size: blob.size,
-          type: blob.type
-        });
-        reader.readAsDataURL(blob);
-      });
-    } catch (e) {
-      return { error: e.message };
+  // Interceptar la respuesta
+  let pdfBuffer = null;
+  let contentType = null;
+  
+  const responseHandler = async (response) => {
+    if (response.url().includes('Download.aspx')) {
+      contentType = response.headers()['content-type'];
+      console.log('⬇️ Content-Type interceptado:', contentType);
+      try {
+        pdfBuffer = await response.buffer();
+      } catch (e) {
+        console.log('⬇️ Error al obtener buffer:', e.message);
+      }
     }
-  }, url);
+  };
   
-  console.log('⬇️ Resultado:', pdfData.error || `${pdfData.size} bytes, tipo: ${pdfData.type}`);
+  page.on('response', responseHandler);
   
-  // Si devolvió HTML, probablemente es error de sesión
-  if (pdfData.type === 'text/html' && pdfData.size < 100000) {
-    console.log('⚠️ Recibimos HTML en vez de PDF - posible error de sesión');
+  try {
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await delay(2000);
+  } catch (e) {
+    // Puede dar error si es descarga directa
+    console.log('⬇️ Navegación:', e.message);
   }
   
-  return pdfData;
+  page.off('response', responseHandler);
+  
+  if (pdfBuffer) {
+    const base64 = pdfBuffer.toString('base64');
+    console.log('⬇️ PDF capturado:', pdfBuffer.length, 'bytes');
+    return {
+      base64,
+      size: pdfBuffer.length,
+      type: contentType || 'application/pdf'
+    };
+  }
+  
+  console.log('⚠️ No se pudo capturar el PDF');
+  return { error: 'No se pudo capturar el PDF' };
 }
 
 module.exports = {

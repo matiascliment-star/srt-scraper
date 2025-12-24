@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
+  comunicacionesFiltro: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
   comunicacionesListado: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesListado.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
   detalleComunicacion: 'https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx'
@@ -109,6 +110,13 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
+  // Ir al frameset principal primero para establecer contexto
+  const filtroUrl = `${SRT_URLS.comunicacionesFiltro}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
+  console.log('📍 Yendo al frameset:', filtroUrl);
+  await page.goto(filtroUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(2000);
+  
+  // Ahora ir a la lista
   const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(3000);
@@ -198,12 +206,11 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
       const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
       if (detalleMatch) result.detalle = detalleMatch[1].trim();
       
-      // Buscar links de descarga - arreglar URL
+      // Buscar links de descarga
       const downloadLinks = doc.querySelectorAll('a[href*="Download"]');
       for (const link of downloadLinks) {
         const href = link.getAttribute('href');
         
-        // Construir URL correctamente
         let fullHref;
         if (href.startsWith('http')) {
           fullHref = href;
@@ -240,11 +247,24 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
 
 async function descargarPdf(page, archivoAdjunto) {
   const url = archivoAdjunto.href;
-  console.log('⬇️ Descargando:', archivoAdjunto.nombre, 'desde', url);
+  console.log('⬇️ Descargando:', archivoAdjunto.nombre);
+  console.log('⬇️ URL:', url);
+  
+  // Navegar a la página del detalle primero para establecer contexto
+  // Luego descargar usando page.goto en vez de fetch
   
   const pdfData = await page.evaluate(async (downloadUrl) => {
     try {
-      const res = await fetch(downloadUrl, { credentials: 'include' });
+      const res = await fetch(downloadUrl, { 
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/pdf,*/*'
+        }
+      });
+      
+      const contentType = res.headers.get('content-type') || '';
+      console.log('Content-Type:', contentType);
+      
       if (!res.ok) return { error: `HTTP ${res.status}` };
       
       const blob = await res.blob();
@@ -263,6 +283,11 @@ async function descargarPdf(page, archivoAdjunto) {
   }, url);
   
   console.log('⬇️ Resultado:', pdfData.error || `${pdfData.size} bytes, tipo: ${pdfData.type}`);
+  
+  // Si devolvió HTML, probablemente es error de sesión
+  if (pdfData.type === 'text/html' && pdfData.size < 100000) {
+    console.log('⚠️ Recibimos HTML en vez de PDF - posible error de sesión');
+  }
   
   return pdfData;
 }

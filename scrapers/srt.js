@@ -163,7 +163,6 @@ async function obtenerComunicaciones(page, expedienteOid) {
 async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = '1') {
   console.log('📄 Obteniendo detalle traID:', traID);
   
-  // Hacer fetch del HTML del detalle (con doble t en ttraIDTIPOACTOR como en el HAR)
   const detalleUrl = `${SRT_URLS.detalleComunicacion}?traID=${traID}&catID=${catID}&ttraIDTIPOACTOR=${tipoActor}`;
   console.log('📄 Fetch URL:', detalleUrl);
   
@@ -174,7 +173,6 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
       
       const html = await res.text();
       
-      // Parsear el HTML
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
       
@@ -183,8 +181,7 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
         fecha: '',
         remitente: '',
         detalle: '',
-        archivosAdjuntos: [],
-        htmlPreview: html.substring(0, 500)
+        archivosAdjuntos: []
       };
       
       const body = doc.body?.innerText || html;
@@ -201,13 +198,21 @@ async function obtenerDetalleComunicacion(page, traID, catID = '2', tipoActor = 
       const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
       if (detalleMatch) result.detalle = detalleMatch[1].trim();
       
-      // Buscar links de descarga
+      // Buscar links de descarga - arreglar URL
       const downloadLinks = doc.querySelectorAll('a[href*="Download"]');
       for (const link of downloadLinks) {
         const href = link.getAttribute('href');
-        const fullHref = href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar/MiVentanilla/' + href;
         
-        // Parsear parámetros
+        // Construir URL correctamente
+        let fullHref;
+        if (href.startsWith('http')) {
+          fullHref = href;
+        } else if (href.startsWith('/')) {
+          fullHref = 'https://eservicios.srt.gob.ar' + href;
+        } else {
+          fullHref = 'https://eservicios.srt.gob.ar/MiVentanilla/' + href;
+        }
+        
         const urlParams = new URLSearchParams(fullHref.split('?')[1] || '');
         
         result.archivosAdjuntos.push({

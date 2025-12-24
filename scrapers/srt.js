@@ -65,11 +65,8 @@ async function loginYNavegarSRT(page, cuit, password) {
 
 async function navegarAExpedientes(page) {
   console.log('📍 Navegando a Expedientes...');
-  
-  // Ir directo a la URL de expedientes
   await page.goto(SRT_URLS.expedientes, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(2000);
-  
   console.log('📍 URL actual:', page.url());
   return page.url().includes('Expedientes');
 }
@@ -111,40 +108,79 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  // Ir directo a ComunicacionesListado con el idExpediente
   const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
-  console.log('📍 Yendo a:', url);
-  
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await delay(3000);
   
   console.log('📍 URL actual:', page.url());
   
-  // Debug
-  const debug = await page.evaluate(() => {
-    return {
-      tables: document.querySelectorAll('table').length,
-      rows: document.querySelectorAll('table tr').length,
-      text: document.body.innerText.substring(0, 800)
-    };
+  // Debug: ver HTML de la primera fila con datos
+  const debugHtml = await page.evaluate(() => {
+    const rows = document.querySelectorAll('table tbody tr');
+    for (const row of rows) {
+      const cells = row.querySelectorAll('td');
+      if (cells.length >= 5) {
+        return {
+          rowHtml: row.outerHTML.substring(0, 2000),
+          lastCellHtml: cells[cells.length - 1]?.innerHTML
+        };
+      }
+    }
+    return { error: 'No rows found' };
   });
   
-  console.log('📍 Debug - tables:', debug.tables, 'rows:', debug.rows);
-  console.log('📍 Texto:', debug.text.substring(0, 400));
+  console.log('📍 HTML primera fila:', debugHtml.rowHtml?.substring(0, 500));
+  console.log('📍 HTML última celda (detalle):', debugHtml.lastCellHtml);
   
   // Scrapear comunicaciones
   const comunicaciones = await page.evaluate(() => {
     const results = [];
-    const rows = document.querySelectorAll('table tbody tr, table tr');
+    const rows = document.querySelectorAll('table tbody tr');
     
     for (const row of rows) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 5) continue;
       
       let traID = null;
+      
+      // Buscar en toda la fila
       const rowHtml = row.outerHTML;
-      const match = rowHtml.match(/traID=(\d+)/i);
+      let match = rowHtml.match(/traID=(\d+)/i);
       if (match) traID = match[1];
+      
+      // Buscar en onclick de la fila
+      if (!traID) {
+        const onclick = row.getAttribute('onclick') || '';
+        match = onclick.match(/traID=(\d+)/i);
+        if (match) traID = match[1];
+      }
+      
+      // Buscar en links dentro de la fila
+      if (!traID) {
+        const links = row.querySelectorAll('a');
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          const onclick = link.getAttribute('onclick') || '';
+          match = (href + onclick).match(/traID=(\d+)/i);
+          if (match) {
+            traID = match[1];
+            break;
+          }
+        }
+      }
+      
+      // Buscar en botones
+      if (!traID) {
+        const buttons = row.querySelectorAll('button, input[type="button"]');
+        for (const btn of buttons) {
+          const onclick = btn.getAttribute('onclick') || '';
+          match = onclick.match(/traID=(\d+)/i);
+          if (match) {
+            traID = match[1];
+            break;
+          }
+        }
+      }
       
       results.push({
         fechaNotificacion: cells[0]?.innerText.trim(),

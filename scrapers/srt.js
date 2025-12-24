@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
-  comunicaciones: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
+  comunicacionesListado: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesListado.aspx',
   apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos'
 };
 
@@ -137,34 +137,14 @@ async function obtenerExpedientes(page) {
 async function obtenerComunicaciones(page, expedienteOid) {
   console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  const url = `${SRT_URLS.comunicaciones}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
+  // Ir directo a ComunicacionesListado.aspx - esta es la página que ya tiene los resultados
+  const url = `${SRT_URLS.comunicacionesListado}?idExpediente=${expedienteOid}`;
+  console.log('📍 Yendo a:', url);
+  
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await delay(2000);
-  
-  console.log('📍 URL comunicaciones:', page.url());
-  
-  // Esperar el botón
-  await page.waitForSelector('#btnBuscar', { visible: true, timeout: 5000 });
-  console.log('🔍 Botón #btnBuscar encontrado');
-  
-  // Click sin esperar navegación
-  console.log('🔍 Clickeando #btnBuscar...');
-  await page.click('#btnBuscar');
-  
-  // Esperar que aparezca la tabla o cambio de URL
-  console.log('🔍 Esperando resultados...');
-  
-  // Esperar cualquier respuesta de red o cambio en DOM
-  await Promise.race([
-    page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {}),
-    page.waitForSelector('table tbody tr', { timeout: 15000 }).catch(() => {}),
-    page.waitForFunction(() => document.querySelectorAll('table tr').length > 1, { timeout: 15000 }).catch(() => {}),
-    delay(10000)
-  ]);
-  
   await delay(3000);
   
-  console.log('📍 URL después de click:', page.url());
+  console.log('📍 URL actual:', page.url());
   
   // Debug
   const debug = await page.evaluate(() => {
@@ -173,14 +153,14 @@ async function obtenerComunicaciones(page, expedienteOid) {
       tables: document.querySelectorAll('table').length,
       tbodyRows: document.querySelectorAll('table tbody tr').length,
       allTr: document.querySelectorAll('tr').length,
-      pageText: document.body.innerText.substring(0, 1000)
+      pageText: document.body.innerText.substring(0, 1200)
     };
   });
   
   console.log('📍 Debug - tables:', debug.tables, 'tbody tr:', debug.tbodyRows, 'all tr:', debug.allTr);
-  console.log('📍 Texto:', debug.pageText.substring(0, 500));
+  console.log('📍 Texto:', debug.pageText.substring(0, 600));
   
-  // Scrapear
+  // Scrapear comunicaciones
   const comunicaciones = await page.evaluate(() => {
     const results = [];
     const rows = document.querySelectorAll('table tbody tr, table tr');

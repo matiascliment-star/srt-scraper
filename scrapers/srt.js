@@ -3,9 +3,8 @@ const puppeteer = require('puppeteer');
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',
   expedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx',
-  apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos',
-  apiIngresos: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerIngresos',
-  apiPdf: 'https://eservicios.srt.gob.ar/Patrocinio/Ingresos/Ingreso.aspx/ObtenerPdfIngreso'
+  comunicaciones: 'https://eservicios.srt.gob.ar/MiVentanilla/ComunicacionesFiltroV2.aspx',
+  apiExpedientes: 'https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerExpedientesMedicos'
 };
 
 const AFIP_SELECTORS = {
@@ -27,8 +26,6 @@ async function loginYNavegarSRT(page, cuit, password) {
   console.log('🔐 Yendo directo a e-Servicios SRT...');
   
   await page.goto(SRT_URLS.eServiciosHome, { waitUntil: 'networkidle2', timeout: 60000 });
-  
-  console.log('📍 URL:', page.url());
   
   if (page.url().includes('afip.gob.ar')) {
     console.log('📍 En AFIP, haciendo login...');
@@ -59,16 +56,16 @@ async function loginYNavegarSRT(page, cuit, password) {
   console.log('📍 Después de login:', page.url());
   
   if (!page.url().includes('srt.gob.ar')) {
-    console.log('❌ No llegamos a SRT');
     return false;
   }
   
   console.log('✅ En e-Servicios SRT');
-  
+  return true;
+}
+
+async function navegarAExpedientes(page) {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await delay(1000);
-  
-  console.log('📍 Buscando Patrocinio Letrado...');
   
   const clickedVerOpciones = await page.evaluate(() => {
     const cards = document.querySelectorAll('h5, h4, h3, .card-title, div');
@@ -77,68 +74,34 @@ async function loginYNavegarSRT(page, cuit, password) {
         const parent = card.closest('.card, .panel, section, div[class*="card"], div[class*="panel"]') || card.parentElement.parentElement;
         if (parent) {
           const btn = parent.querySelector('button, a');
-          if (btn && btn.innerText.includes('VER OPCIONES')) {
-            btn.click();
-            return { found: true, text: 'VER OPCIONES' };
-          }
-          const anyBtn = parent.querySelector('button, a.btn, [role="button"]');
-          if (anyBtn) {
-            anyBtn.click();
-            return { found: true, text: anyBtn.innerText };
-          }
+          if (btn) { btn.click(); return true; }
         }
       }
     }
-    
-    const allButtons = document.querySelectorAll('button, a.btn');
-    for (const btn of allButtons) {
-      const rect = btn.getBoundingClientRect();
-      if (btn.innerText.includes('VER OPCIONES') && rect.top > 400) {
-        btn.scrollIntoView();
-        btn.click();
-        return { found: true, text: 'VER OPCIONES plan B' };
-      }
-    }
-    
-    return { found: false };
+    return false;
   });
-  
-  console.log('📍 Click VER OPCIONES:', JSON.stringify(clickedVerOpciones));
   
   await delay(2000);
   
-  const clickedExpedientes = await page.evaluate(() => {
+  await page.evaluate(() => {
     const links = document.querySelectorAll('a');
     for (const link of links) {
       if (link.innerText.includes('Expedientes') || link.href.includes('Expedientes')) {
         link.click();
-        return { found: true, text: link.innerText, href: link.href };
+        return true;
       }
     }
-    return { found: false };
+    return false;
   });
   
-  console.log('📍 Click Expedientes:', JSON.stringify(clickedExpedientes));
-  
-  if (clickedExpedientes.found) {
-    await delay(2000);
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-  }
-  
-  console.log('📍 URL final:', page.url());
   await delay(2000);
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
   
-  return page.url().includes('Expedientes') && !page.url().includes('ErrorValidate');
+  return page.url().includes('Expedientes');
 }
 
 async function obtenerExpedientes(page) {
   console.log('📋 Obteniendo expedientes...');
-  console.log('📍 URL:', page.url());
-  
-  if (page.url().includes('ErrorValidate') || !page.url().includes('Expedientes')) {
-    console.log('❌ Sesión no válida');
-    return [];
-  }
   
   const response = await page.evaluate(async (url) => {
     try {
@@ -167,82 +130,157 @@ async function obtenerExpedientes(page) {
     damnificadoCuil: exp.Damnificado?.Cuil,
     damnificadoNombre: exp.Damnificado?.Nombre,
     fechaInicio: parseDotNetDate(exp.Inicio),
-    comunicacionesSinLectura: exp.ComunicacionessinLectura || 0,
-    fechaUltComunicacion: parseDotNetDate(exp.FechaUltComunicacionsinLeer)
+    comunicacionesSinLectura: exp.ComunicacionessinLectura || 0
   }));
 }
 
-async function obtenerMovimientos(page, expedienteOid) {
-  console.log('📥 Obteniendo movimientos para OID:', expedienteOid);
+async function obtenerComunicaciones(page, expedienteOid) {
+  console.log('📨 Obteniendo comunicaciones para expediente OID:', expedienteOid);
   
-  const response = await page.evaluate(async (url, oid) => {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
-        body: JSON.stringify({ idExpediente: oid })
+  // Navegar a la página de comunicaciones del expediente
+  const url = `${SRT_URLS.comunicaciones}?return=expedientesPatrocinantes&idExpediente=${expedienteOid}`;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(2000);
+  
+  console.log('📍 URL comunicaciones:', page.url());
+  
+  // Scrapear la tabla de comunicaciones
+  const comunicaciones = await page.evaluate(() => {
+    const rows = document.querySelectorAll('table tbody tr, .grid-row, [class*="row"]');
+    const results = [];
+    
+    // Buscar todos los links que vayan a DetalleComunicacion
+    const links = document.querySelectorAll('a[href*="DetalleComunicacion"]');
+    
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      const urlParams = new URLSearchParams(href.split('?')[1]);
+      const traID = urlParams.get('traID');
+      
+      // Buscar la fila padre para obtener más datos
+      const row = link.closest('tr') || link.closest('[class*="row"]') || link.parentElement;
+      const cells = row ? row.querySelectorAll('td, [class*="col"]') : [];
+      
+      const textos = Array.from(cells).map(c => c.innerText.trim());
+      
+      results.push({
+        traID,
+        href,
+        textos,
+        linkText: link.innerText.trim()
       });
-      const text = await res.text();
-      return { status: res.status, text };
-    } catch (e) {
-      return { error: e.message };
-    }
-  }, SRT_URLS.apiIngresos, expedienteOid);
-  
-  if (response.error) {
-    console.log('❌ Error movimientos:', response.error);
-    return [];
-  }
-  
-  try {
-    const data = JSON.parse(response.text);
-    if (!data.d || data.d.length === 0) {
-      console.log('📭 Sin movimientos');
-      return [];
     }
     
-    console.log('✅ ' + data.d.length + ' movimientos');
+    // También buscar en el HTML general por patrones
+    const html = document.body.innerHTML;
+    const traIDMatches = html.match(/traID=(\d+)/g) || [];
     
-    return data.d.map(mov => ({
-      expedienteOid: mov.Ingreso?.IdExpediente,
-      ingresoOid: mov.Ingreso?.OID,
-      ingresoNro: mov.Ingreso?.NroIngreso,
-      fecha: parseDotNetDate(mov.Ingreso?.FechaInsert),
-      tipoCodigo: mov.Tipo?.valor,
-      tipoDescripcion: mov.Tipo?.nombre
-    }));
-  } catch (e) {
-    console.log('❌ Parse error:', e.message);
-    return [];
-  }
+    return {
+      comunicaciones: results,
+      traIDsEncontrados: [...new Set(traIDMatches)],
+      htmlPreview: document.body.innerText.substring(0, 2000)
+    };
+  });
+  
+  console.log('📨 Comunicaciones encontradas:', comunicaciones.comunicaciones.length);
+  console.log('📨 traIDs en HTML:', comunicaciones.traIDsEncontrados.length);
+  
+  return comunicaciones;
 }
 
-async function obtenerPdfMovimiento(page, ingresoOid) {
-  console.log('📄 Obteniendo PDF para ingreso OID:', ingresoOid);
+async function obtenerDetalleComunicacion(page, traID) {
+  console.log('📄 Obteniendo detalle de comunicación traID:', traID);
   
-  const response = await page.evaluate(async (url, oid) => {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json;charset=UTF-8' },
-        body: JSON.stringify({ idIngreso: oid })
+  const url = `https://eservicios.srt.gob.ar/MiVentanilla/DetalleComunicacion.aspx?traID=${traID}&catID=2&traIDTIPOACTOR=1`;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(2000);
+  
+  // Scrapear el detalle
+  const detalle = await page.evaluate(() => {
+    const result = {
+      tipoComunicacion: '',
+      fecha: '',
+      remitente: '',
+      detalle: '',
+      archivosAdjuntos: [],
+      movimientos: []
+    };
+    
+    // Buscar campos del detalle
+    const body = document.body.innerText;
+    
+    // Tipo de Comunicación
+    const tipoMatch = body.match(/Tipo de Comunicación:\s*([^\n]+)/);
+    if (tipoMatch) result.tipoComunicacion = tipoMatch[1].trim();
+    
+    // Fecha
+    const fechaMatch = body.match(/Fecha:\s*([^\n]+)/);
+    if (fechaMatch) result.fecha = fechaMatch[1].trim();
+    
+    // Remitente
+    const remitenteMatch = body.match(/Remitente:\s*([^\n]+)/);
+    if (remitenteMatch) result.remitente = remitenteMatch[1].trim();
+    
+    // Detalle
+    const detalleMatch = body.match(/Detalle:\s*([^\n]+)/);
+    if (detalleMatch) result.detalle = detalleMatch[1].trim();
+    
+    // Buscar archivos adjuntos (links de descarga)
+    const downloadLinks = document.querySelectorAll('a[href*="Download.aspx"]');
+    for (const link of downloadLinks) {
+      const href = link.getAttribute('href');
+      const urlParams = new URLSearchParams(href.split('?')[1]);
+      result.archivosAdjuntos.push({
+        id: urlParams.get('id'),
+        idTipoRef: urlParams.get('idTipoRef'),
+        nombre: urlParams.get('nombre') || link.innerText.trim(),
+        href: href.startsWith('http') ? href : 'https://eservicios.srt.gob.ar' + href
       });
-      const text = await res.text();
-      return { status: res.status, text: text.substring(0, 500), fullLength: text.length };
+    }
+    
+    return result;
+  });
+  
+  console.log('📄 Archivos adjuntos:', detalle.archivosAdjuntos.length);
+  
+  return detalle;
+}
+
+async function descargarPdf(page, archivoAdjunto) {
+  console.log('⬇️ Descargando PDF:', archivoAdjunto.nombre);
+  
+  // Descargar el PDF como base64
+  const pdfData = await page.evaluate(async (url) => {
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      
+      const blob = await res.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ 
+          base64: reader.result.split(',')[1],
+          size: blob.size,
+          type: blob.type
+        });
+        reader.readAsDataURL(blob);
+      });
     } catch (e) {
       return { error: e.message };
     }
-  }, SRT_URLS.apiPdf, ingresoOid);
+  }, archivoAdjunto.href);
   
-  console.log('📄 PDF Response:', JSON.stringify(response));
-  return response;
+  return pdfData;
 }
 
 module.exports = {
   loginYNavegarSRT,
+  navegarAExpedientes,
   obtenerExpedientes,
-  obtenerMovimientos,
-  obtenerPdfMovimiento,
+  obtenerComunicaciones,
+  obtenerDetalleComunicacion,
+  descargarPdf,
   parseDotNetDate,
-  SRT_URLS
+  SRT_URLS,
+  delay
 };

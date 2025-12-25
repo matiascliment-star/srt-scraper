@@ -9,6 +9,7 @@ const {
   obtenerExpedientes, 
   obtenerComunicaciones,
   obtenerDetalleComunicacion,
+  descargarPdf,
   delay 
 } = require('./scrapers/srt');
 
@@ -35,7 +36,7 @@ function normalizarNumeroSrt(numero) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v6.9' });
+  res.json({ status: 'ok', service: 'SRT Scraper v7.0' });
 });
 
 // VINCULAR CASOS
@@ -142,6 +143,52 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
     res.setHeader('Content-Disposition', `inline; filename="expediente_${oid}.pdf"`);
     res.send(pdfBuffer);
   } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DESCARGAR PDF ADJUNTO DE COMUNICACIÓN
+app.get('/srt/adjunto-pdf/:id', async (req, res) => {
+  const { id } = req.params;
+  console.log('📎 PDF adjunto ID:', id);
+  
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    
+    const page = await browser.newPage();
+    const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
+    if (!loginOk) { await browser.close(); return res.status(500).json({ error: 'Login fallido' }); }
+    
+    // Construir objeto adjunto con la URL de descarga
+    const archivoAdjunto = {
+      id: id,
+      href: `https://eservicios.srt.gob.ar/MiVentanilla/Download.aspx?id=${id}`
+    };
+    
+    const pdfData = await descargarPdf(page, archivoAdjunto);
+    await browser.close();
+    
+    if (pdfData.error) {
+      return res.status(404).json({ error: pdfData.error });
+    }
+    
+    if (!pdfData.base64) {
+      return res.status(404).json({ error: 'PDF no encontrado' });
+    }
+    
+    const pdfBuffer = Buffer.from(pdfData.base64, 'base64');
+    console.log('📎 PDF adjunto:', pdfBuffer.length, 'bytes, isPdf:', pdfData.isPdf);
+    
+    res.setHeader('Content-Type', pdfData.isPdf ? 'application/pdf' : 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="adjunto_${id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error('❌ Error adjunto-pdf:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   }
@@ -279,4 +326,4 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 SRT Scraper v6.9 en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.0 en puerto ${PORT}`));

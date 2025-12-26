@@ -103,7 +103,9 @@ app.post('/srt/vincular-casos', async (req, res) => {
       expedientes: expedientesSrt.map(exp => ({
         numero: exp.nro,
         oid: exp.oid,
-        caratula: exp.caratula || exp.descripcion || null
+        nombre: exp.damnificadoNombre || null,
+        cuil: exp.damnificadoCuil || null,
+        motivo: exp.motivo || null
       }))
     });
   } catch (error) {

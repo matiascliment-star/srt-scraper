@@ -338,5 +338,105 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
   res.json({ comunicaciones: data });
 });
 
+// IMPORTAR COMUNICACIONES DE UN SOLO EXPEDIENTE
+app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
+  const { usuario, password, expedienteOid, casoSrtId } = req.body;
+  if (!usuario || !password || !expedienteOid) {
+    return res.status(400).json({ error: 'Faltan credenciales o expedienteOid' });
+  }
+  
+  const stats = { comunicacionesNuevas: 0, existentes: 0, adjuntos: 0 };
+  let browser;
+  
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    const loginOk = await loginYNavegarSRT(page, usuario, password);
+    if (!loginOk) { 
+      await browser.close(); 
+      return res.status(401).json({ error: 'Login fallido' }); 
+    }
+    
+    await navegarAExpedientes(page);
+    
+    console.log(`📁 Importando comunicaciones del expediente OID: ${expedienteOid}`);
+    
+    const comunicaciones = await obtenerComunicaciones(page, expedienteOid);
+    
+    for (const com of comunicaciones) {
+      if (!com.traID) continue;
+      
+      // Verificar si ya existe
+      const { data: existe } = await supabase
+        .from('comunicaciones_srt')
+        .select('id')
+        .eq('srt_tra_id', com.traID)
+        .single();
+      
+      if (existe) {
+        stats.existentes++;
+        continue;
+      }
+      
+      // Obtener detalle
+      const detalle = await obtenerDetalleComunicacion(page, com.traID, com.catID, com.tipoActor);
+      
+      // Insertar comunicación
+      const { data: nuevaCom, error: errorCom } = await supabase
+        .from('comunicaciones_srt')
+        .insert({
+          caso_srt_id: casoSrtId || null,
+          srt_expediente_oid: expedienteOid,
+          srt_expediente_nro: com.expediente,
+          srt_tra_id: com.traID,
+          fecha_notificacion: parseFechaSrt(com.fechaNotificacion),
+          remitente: com.remitente,
+          sector: com.sector,
+          tipo_comunicacion: com.tipoComunicacion,
+          estado: com.estado,
+          fecha_estado: parseFechaSrt(com.fechaUltEstado),
+          detalle: detalle.detalle || null
+        })
+        .select()
+        .single();
+      
+      if (errorCom) {
+        console.log(`⚠️ Error insertando comunicación: ${errorCom.message}`);
+        continue;
+      }
+      
+      stats.comunicacionesNuevas++;
+      
+      // Insertar adjuntos
+      for (const adj of detalle.archivosAdjuntos || []) {
+        await supabase.from('adjuntos_comunicacion_srt').insert({
+          comunicacion_id: nuevaCom.id,
+          srt_adjunto_id: adj.id,
+          srt_id_tipo_ref: adj.idTipoRef,
+          nombre: adj.nombre,
+          url_descarga: adj.href
+        });
+        stats.adjuntos++;
+      }
+    }
+    
+    await browser.close();
+    
+    console.log(`✅ Comunicaciones importadas:`, stats);
+    res.json({ success: true, stats });
+    
+  } catch (error) {
+    console.error('❌ Error importando comunicaciones:', error.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message, stats });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.1 en puerto ${PORT}`));

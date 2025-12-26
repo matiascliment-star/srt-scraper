@@ -36,10 +36,10 @@ function normalizarNumeroSrt(numero) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v7.0' });
+  res.json({ status: 'ok', service: 'SRT Scraper v7.1' });
 });
 
-// VINCULAR CASOS
+// VINCULAR CASOS + LISTAR EXPEDIENTES
 app.post('/srt/vincular-casos', async (req, res) => {
   const { usuario, password } = req.body;
   if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
@@ -62,6 +62,8 @@ app.post('/srt/vincular-casos', async (req, res) => {
     await navegarAExpedientes(page);
     const expedientesSrt = await obtenerExpedientes(page);
     await browser.close();
+    
+    console.log(`✅ Expedientes SRT obtenidos: ${expedientesSrt.length}`);
     
     const mapaSrt = {};
     for (const exp of expedientesSrt) {
@@ -94,7 +96,16 @@ app.post('/srt/vincular-casos', async (req, res) => {
       }
     }
     
-    res.json({ success: true, stats });
+    // Devolver stats Y la lista de expedientes
+    res.json({ 
+      success: true, 
+      stats,
+      expedientes: expedientesSrt.map(exp => ({
+        numero: exp.nro,
+        oid: exp.oid,
+        caratula: exp.caratula || exp.descripcion || null
+      }))
+    });
   } catch (error) {
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
@@ -326,4 +337,4 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.0 en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.1 en puerto ${PORT}`));

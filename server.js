@@ -19,6 +19,35 @@ app.use(express.json());
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// ============================================================
+// RATE LIMITING - Solo 1 browser a la vez para PDFs
+// ============================================================
+let pdfBrowserEnUso = false;
+const PDF_QUEUE = [];
+
+async function esperarTurnoPdf() {
+  if (!pdfBrowserEnUso) {
+    pdfBrowserEnUso = true;
+    return;
+  }
+  
+  // Esperar en cola
+  return new Promise((resolve) => {
+    PDF_QUEUE.push(resolve);
+  });
+}
+
+function liberarTurnoPdf() {
+  if (PDF_QUEUE.length > 0) {
+    const siguiente = PDF_QUEUE.shift();
+    siguiente();
+  } else {
+    pdfBrowserEnUso = false;
+  }
+}
+
+// ============================================================
+
 function parseFechaSrt(fechaStr) {
   if (!fechaStr || fechaStr.trim() === '') return null;
   const match = fechaStr.match(/(\d{2})\/(\d{2})\/(\d{4})\s*(\d{2})?:?(\d{2})?/);
@@ -36,7 +65,12 @@ function normalizarNumeroSrt(numero) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'SRT Scraper v7.1' });
+  res.json({ 
+    status: 'ok', 
+    service: 'SRT Scraper v7.2',
+    pdfQueueLength: PDF_QUEUE.length,
+    pdfBrowserEnUso
+  });
 });
 
 // VINCULAR CASOS + LISTAR EXPEDIENTES
@@ -96,7 +130,6 @@ app.post('/srt/vincular-casos', async (req, res) => {
       }
     }
     
-    // Devolver stats Y la lista de expedientes
     res.json({ 
       success: true, 
       stats,
@@ -114,21 +147,28 @@ app.post('/srt/vincular-casos', async (req, res) => {
   }
 });
 
-// DESCARGAR PDF EXPEDIENTE
+// DESCARGAR PDF EXPEDIENTE - CON RATE LIMITING
 app.get('/srt/expediente-pdf/:oid', async (req, res) => {
   const { oid } = req.params;
-  console.log('📥 PDF expediente OID:', oid);
+  console.log('📥 PDF expediente OID:', oid, '| Cola:', PDF_QUEUE.length);
   
   let browser;
+  
   try {
+    // Esperar turno
+    await esperarTurnoPdf();
+    console.log('🔓 Turno obtenido para expediente:', oid);
+    
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
     });
     
     const page = await browser.newPage();
     const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
-    if (!loginOk) { await browser.close(); return res.status(500).json({ error: 'Login fallido' }); }
+    if (!loginOk) {
+      throw new Error('Login fallido');
+    }
     
     await navegarAExpedientes(page);
     await delay(2000);
@@ -146,36 +186,51 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
     }, oid);
     
     await browser.close();
+    browser = null;
     
-    if (!pdfData.data) return res.status(404).json({ error: 'PDF no encontrado' });
+    if (!pdfData.data) {
+      throw new Error('PDF no encontrado');
+    }
     
     const pdfBuffer = Buffer.from(pdfData.data, 'base64');
-    console.log('📥 PDF:', pdfBuffer.length, 'bytes');
+    console.log('📥 PDF expediente:', pdfBuffer.length, 'bytes');
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="expediente_${oid}.pdf"`);
     res.send(pdfBuffer);
+    
   } catch (error) {
+    console.error('❌ Error expediente-pdf:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
+  } finally {
+    liberarTurnoPdf();
+    console.log('🔒 Turno liberado, cola restante:', PDF_QUEUE.length);
   }
 });
 
-// DESCARGAR PDF ADJUNTO DE COMUNICACIÓN
+// DESCARGAR PDF ADJUNTO DE COMUNICACIÓN - CON RATE LIMITING
 app.get('/srt/adjunto-pdf/:id', async (req, res) => {
   const { id } = req.params;
-  console.log('📎 PDF adjunto ID:', id);
+  console.log('📎 PDF adjunto ID:', id, '| Cola:', PDF_QUEUE.length);
   
   let browser;
+  
   try {
+    // Esperar turno
+    await esperarTurnoPdf();
+    console.log('🔓 Turno obtenido para adjunto:', id);
+    
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
     });
     
     const page = await browser.newPage();
     const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
-    if (!loginOk) { await browser.close(); return res.status(500).json({ error: 'Login fallido' }); }
+    if (!loginOk) {
+      throw new Error('Login fallido');
+    }
     
     // Construir objeto adjunto con la URL de descarga
     const archivoAdjunto = {
@@ -184,26 +239,32 @@ app.get('/srt/adjunto-pdf/:id', async (req, res) => {
     };
     
     const pdfData = await descargarPdf(page, archivoAdjunto);
+    
     await browser.close();
+    browser = null;
     
     if (pdfData.error) {
-      return res.status(404).json({ error: pdfData.error });
+      throw new Error(pdfData.error);
     }
     
     if (!pdfData.base64) {
-      return res.status(404).json({ error: 'PDF no encontrado' });
+      throw new Error('PDF no encontrado');
     }
     
     const pdfBuffer = Buffer.from(pdfData.base64, 'base64');
-    console.log('📎 PDF adjunto:', pdfBuffer.length, 'bytes, isPdf:', pdfData.isPdf);
+    console.log('📎 PDF adjunto:', pdfBuffer.length, 'bytes');
     
     res.setHeader('Content-Type', pdfData.isPdf ? 'application/pdf' : 'application/octet-stream');
     res.setHeader('Content-Disposition', `inline; filename="adjunto_${id}.pdf"`);
     res.send(pdfBuffer);
+    
   } catch (error) {
     console.error('❌ Error adjunto-pdf:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
+  } finally {
+    liberarTurnoPdf();
+    console.log('🔒 Turno liberado, cola restante:', PDF_QUEUE.length);
   }
 });
 
@@ -230,7 +291,7 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
     
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
     });
     
     page = await browser.newPage();
@@ -351,7 +412,7 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
   try {
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
     });
     
     const page = await browser.newPage();
@@ -372,7 +433,6 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
     for (const com of comunicaciones) {
       if (!com.traID) continue;
       
-      // Verificar si ya existe
       const { data: existe } = await supabase
         .from('comunicaciones_srt')
         .select('id')
@@ -384,10 +444,8 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
         continue;
       }
       
-      // Obtener detalle
       const detalle = await obtenerDetalleComunicacion(page, com.traID, com.catID, com.tipoActor);
       
-      // Insertar comunicación
       const { data: nuevaCom, error: errorCom } = await supabase
         .from('comunicaciones_srt')
         .insert({
@@ -413,7 +471,6 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
       
       stats.comunicacionesNuevas++;
       
-      // Insertar adjuntos
       for (const adj of detalle.archivosAdjuntos || []) {
         await supabase.from('adjuntos_comunicacion_srt').insert({
           comunicacion_id: nuevaCom.id,
@@ -439,4 +496,4 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.1 en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.2 en puerto ${PORT}`));

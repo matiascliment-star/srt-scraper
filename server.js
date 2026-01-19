@@ -77,14 +77,14 @@ app.get('/', (req, res) => {
 app.post('/srt/vincular-casos', async (req, res) => {
   const { usuario, password } = req.body;
   if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
-  
+
   const stats = { casosEncontrados: 0, casosVinculados: 0, casosSinMatch: 0 };
   let browser;
-  
+
   try {
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     
     const page = await browser.newPage();
@@ -291,9 +291,9 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
     
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
-    
+
     page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     
@@ -405,14 +405,14 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
   if (!usuario || !password || !expedienteOid) {
     return res.status(400).json({ error: 'Faltan credenciales o expedienteOid' });
   }
-  
+
   const stats = { comunicacionesNuevas: 0, existentes: 0, adjuntos: 0 };
   let browser;
-  
+
   try {
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     
     const page = await browser.newPage();

@@ -2,7 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+
+// Chrome está en esta ruta en la imagen ghcr.io/puppeteer/puppeteer
+const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 const { 
   loginYNavegarSRT, 
   navegarAExpedientes, 
@@ -84,6 +87,7 @@ app.post('/srt/vincular-casos', async (req, res) => {
   try {
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: CHROME_PATH,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     
@@ -161,7 +165,8 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
     
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
+      executablePath: CHROME_PATH,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     
     const page = await browser.newPage();
@@ -223,7 +228,8 @@ app.get('/srt/adjunto-pdf/:id', async (req, res) => {
     
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
+      executablePath: CHROME_PATH,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     
     const page = await browser.newPage();
@@ -291,6 +297,7 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
     
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: CHROME_PATH,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
 
@@ -412,6 +419,7 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
   try {
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: CHROME_PATH,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process']
     });
     

@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer');
+// puppeteer-core se usa desde server.js
 
 const SRT_URLS = {
   eServiciosHome: 'https://eservicios.srt.gob.ar/home/Servicios.aspx',

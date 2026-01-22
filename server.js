@@ -61,8 +61,15 @@ async function lanzarBrowser() {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--single-process',
-      '--no-zygote'
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--safebrowsing-disable-auto-update'
     ]
   });
 }
@@ -88,7 +95,7 @@ function normalizarNumeroSrt(numero) {
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    service: 'SRT Scraper v7.3',
+    service: 'SRT Scraper v7.4',
     browserQueueLength: BROWSER_QUEUE.length,
     browserEnUso
   });

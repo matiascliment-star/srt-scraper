@@ -6,14 +6,14 @@ const puppeteer = require('puppeteer-core');
 
 // Chrome está en esta ruta en la imagen ghcr.io/puppeteer/puppeteer
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-const { 
-  loginYNavegarSRT, 
-  navegarAExpedientes, 
-  obtenerExpedientes, 
+const {
+  loginYNavegarSRT,
+  navegarAExpedientes,
+  obtenerExpedientes,
   obtenerComunicaciones,
   obtenerDetalleComunicacion,
   descargarPdf,
-  delay 
+  delay
 } = require('./scrapers/srt');
 
 const app = express();
@@ -23,30 +23,48 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // ============================================================
-// RATE LIMITING - Solo 1 browser a la vez para PDFs
+// RATE LIMITING GLOBAL - Solo 1 browser a la vez para TODO
 // ============================================================
-let pdfBrowserEnUso = false;
-const PDF_QUEUE = [];
+let browserEnUso = false;
+const BROWSER_QUEUE = [];
 
-async function esperarTurnoPdf() {
-  if (!pdfBrowserEnUso) {
-    pdfBrowserEnUso = true;
+async function esperarTurnoBrowser() {
+  if (!browserEnUso) {
+    browserEnUso = true;
+    console.log('🔓 Browser disponible, tomando turno');
     return;
   }
-  
-  // Esperar en cola
+
+  console.log(`⏳ Browser ocupado, entrando en cola (posición ${BROWSER_QUEUE.length + 1})`);
   return new Promise((resolve) => {
-    PDF_QUEUE.push(resolve);
+    BROWSER_QUEUE.push(resolve);
   });
 }
 
-function liberarTurnoPdf() {
-  if (PDF_QUEUE.length > 0) {
-    const siguiente = PDF_QUEUE.shift();
+function liberarTurnoBrowser() {
+  if (BROWSER_QUEUE.length > 0) {
+    const siguiente = BROWSER_QUEUE.shift();
+    console.log(`➡️ Pasando turno al siguiente (quedan ${BROWSER_QUEUE.length} en cola)`);
     siguiente();
   } else {
-    pdfBrowserEnUso = false;
+    browserEnUso = false;
+    console.log('🔒 Browser liberado, nadie en cola');
   }
+}
+
+async function lanzarBrowser() {
+  return await puppeteer.launch({
+    headless: 'new',
+    executablePath: CHROME_PATH,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote'
+    ]
+  });
 }
 
 // ============================================================
@@ -68,11 +86,11 @@ function normalizarNumeroSrt(numero) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'SRT Scraper v7.2',
-    pdfQueueLength: PDF_QUEUE.length,
-    pdfBrowserEnUso
+  res.json({
+    status: 'ok',
+    service: 'SRT Scraper v7.3',
+    browserQueueLength: BROWSER_QUEUE.length,
+    browserEnUso
   });
 });
 
@@ -85,45 +103,47 @@ app.post('/srt/vincular-casos', async (req, res) => {
   let browser;
 
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-    
+    // Esperar turno en cola global
+    await esperarTurnoBrowser();
+
+    browser = await lanzarBrowser();
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-    
+
     const loginOk = await loginYNavegarSRT(page, usuario, password);
-    if (!loginOk) { await browser.close(); return res.status(401).json({ error: 'Login fallido' }); }
-    
+    if (!loginOk) {
+      await browser.close();
+      return res.status(401).json({ error: 'Login fallido' });
+    }
+
     await navegarAExpedientes(page);
     const expedientesSrt = await obtenerExpedientes(page);
     await browser.close();
-    
+    browser = null;
+
     console.log(`✅ Expedientes SRT obtenidos: ${expedientesSrt.length}`);
-    
+
     const mapaSrt = {};
     for (const exp of expedientesSrt) {
       const nroNorm = normalizarNumeroSrt(exp.nro);
       if (nroNorm) mapaSrt[nroNorm] = exp;
     }
-    
+
     const { data: casos } = await supabase
       .from('casos_srt')
       .select('id, numero_srt')
       .is('srt_expediente_oid', null)
       .not('numero_srt', 'is', null);
-    
+
     stats.casosEncontrados = casos?.length || 0;
-    
+
     for (const caso of casos || []) {
       const nroNorm = normalizarNumeroSrt(caso.numero_srt);
       if (nroNorm && mapaSrt[nroNorm]) {
         const exp = mapaSrt[nroNorm];
         await supabase
           .from('casos_srt')
-          .update({ 
+          .update({
             srt_expediente_oid: exp.oid,
             url_pdf_expediente: `https://srt-scraper-production.up.railway.app/srt/expediente-pdf/${exp.oid}`
           })
@@ -133,9 +153,9 @@ app.post('/srt/vincular-casos', async (req, res) => {
         stats.casosSinMatch++;
       }
     }
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       stats,
       expedientes: expedientesSrt.map(exp => ({
         numero: exp.nro,
@@ -146,38 +166,34 @@ app.post('/srt/vincular-casos', async (req, res) => {
       }))
     });
   } catch (error) {
+    console.error('❌ Error vincular-casos:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
+  } finally {
+    liberarTurnoBrowser();
   }
 });
 
-// DESCARGAR PDF EXPEDIENTE - CON RATE LIMITING
+// DESCARGAR PDF EXPEDIENTE
 app.get('/srt/expediente-pdf/:oid', async (req, res) => {
   const { oid } = req.params;
-  console.log('📥 PDF expediente OID:', oid, '| Cola:', PDF_QUEUE.length);
-  
+  console.log('📥 PDF expediente OID:', oid, '| Cola:', BROWSER_QUEUE.length);
+
   let browser;
-  
+
   try {
-    // Esperar turno
-    await esperarTurnoPdf();
-    console.log('🔓 Turno obtenido para expediente:', oid);
-    
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-    
+    await esperarTurnoBrowser();
+
+    browser = await lanzarBrowser();
     const page = await browser.newPage();
     const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
     if (!loginOk) {
       throw new Error('Login fallido');
     }
-    
+
     await navegarAExpedientes(page);
     await delay(2000);
-    
+
     const pdfData = await page.evaluate(async (expedienteOid) => {
       const res = await fetch('https://eservicios.srt.gob.ar/Patrocinio/Expedientes/Expedientes.aspx/ObtenerPDF', {
         method: 'POST',
@@ -189,88 +205,78 @@ app.get('/srt/expediente-pdf/:oid', async (req, res) => {
       const data = await res.json();
       return { data: data.d };
     }, oid);
-    
+
     await browser.close();
     browser = null;
-    
+
     if (!pdfData.data) {
       throw new Error('PDF no encontrado');
     }
-    
+
     const pdfBuffer = Buffer.from(pdfData.data, 'base64');
     console.log('📥 PDF expediente:', pdfBuffer.length, 'bytes');
-    
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="expediente_${oid}.pdf"`);
     res.send(pdfBuffer);
-    
+
   } catch (error) {
     console.error('❌ Error expediente-pdf:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   } finally {
-    liberarTurnoPdf();
-    console.log('🔒 Turno liberado, cola restante:', PDF_QUEUE.length);
+    liberarTurnoBrowser();
   }
 });
 
-// DESCARGAR PDF ADJUNTO DE COMUNICACIÓN - CON RATE LIMITING
+// DESCARGAR PDF ADJUNTO DE COMUNICACIÓN
 app.get('/srt/adjunto-pdf/:id', async (req, res) => {
   const { id } = req.params;
-  console.log('📎 PDF adjunto ID:', id, '| Cola:', PDF_QUEUE.length);
-  
+  console.log('📎 PDF adjunto ID:', id, '| Cola:', BROWSER_QUEUE.length);
+
   let browser;
-  
+
   try {
-    // Esperar turno
-    await esperarTurnoPdf();
-    console.log('🔓 Turno obtenido para adjunto:', id);
-    
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-    
+    await esperarTurnoBrowser();
+
+    browser = await lanzarBrowser();
     const page = await browser.newPage();
     const loginOk = await loginYNavegarSRT(page, process.env.SRT_USER, process.env.SRT_PASS);
     if (!loginOk) {
       throw new Error('Login fallido');
     }
-    
-    // Construir objeto adjunto con la URL de descarga
+
     const archivoAdjunto = {
       id: id,
       href: `https://eservicios.srt.gob.ar/MiVentanilla/Download.aspx?id=${id}`
     };
-    
+
     const pdfData = await descargarPdf(page, archivoAdjunto);
-    
+
     await browser.close();
     browser = null;
-    
+
     if (pdfData.error) {
       throw new Error(pdfData.error);
     }
-    
+
     if (!pdfData.base64) {
       throw new Error('PDF no encontrado');
     }
-    
+
     const pdfBuffer = Buffer.from(pdfData.base64, 'base64');
     console.log('📎 PDF adjunto:', pdfBuffer.length, 'bytes');
-    
+
     res.setHeader('Content-Type', pdfData.isPdf ? 'application/pdf' : 'application/octet-stream');
     res.setHeader('Content-Disposition', `inline; filename="adjunto_${id}.pdf"`);
     res.send(pdfBuffer);
-    
+
   } catch (error) {
     console.error('❌ Error adjunto-pdf:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   } finally {
-    liberarTurnoPdf();
-    console.log('🔒 Turno liberado, cola restante:', PDF_QUEUE.length);
+    liberarTurnoBrowser();
   }
 });
 
@@ -278,41 +284,43 @@ app.get('/srt/adjunto-pdf/:id', async (req, res) => {
 app.post('/srt/importar-comunicaciones', async (req, res) => {
   const { usuario, password, limit = 500 } = req.body;
   if (!usuario || !password) return res.status(400).json({ error: 'Faltan credenciales' });
-  
+
   const stats = { procesados: 0, comunicacionesNuevas: 0, existentes: 0, adjuntos: 0, errores: [] };
   let browser;
   let page;
   const RELOGIN_CADA = 50;
-  
+
   try {
+    await esperarTurnoBrowser();
+
     const { data: casos } = await supabase
       .from('casos_srt')
       .select('id, srt_expediente_oid, numero_srt')
       .not('srt_expediente_oid', 'is', null)
       .limit(limit);
-    
-    if (!casos?.length) return res.json({ success: true, message: 'No hay casos', stats });
-    
-    console.log(`📋 Procesando ${casos.length} casos`);
-    
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
 
+    if (!casos?.length) {
+      return res.json({ success: true, message: 'No hay casos', stats });
+    }
+
+    console.log(`📋 Procesando ${casos.length} casos`);
+
+    browser = await lanzarBrowser();
     page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-    
+
     let loginOk = await loginYNavegarSRT(page, usuario, password);
-    if (!loginOk) { await browser.close(); return res.status(401).json({ error: 'Login fallido' }); }
-    
+    if (!loginOk) {
+      await browser.close();
+      return res.status(401).json({ error: 'Login fallido' });
+    }
+
     await navegarAExpedientes(page);
-    
+
     for (let i = 0; i < casos.length; i++) {
       const caso = casos[i];
-      
-      // Relogin cada 50 casos
+
+      // Relogin cada 50 casos (nueva página, mismo browser)
       if (i > 0 && i % RELOGIN_CADA === 0) {
         console.log(`🔄 Relogin después de ${i} casos...`);
         await page.close();
@@ -325,29 +333,29 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
         }
         await navegarAExpedientes(page);
       }
-      
+
       try {
         console.log(`📁 [${i+1}/${casos.length}] ${caso.numero_srt}`);
         stats.procesados++;
-        
+
         const comunicaciones = await obtenerComunicaciones(page, caso.srt_expediente_oid);
-        
+
         for (const com of comunicaciones) {
           if (!com.traID) continue;
-          
+
           const { data: existe } = await supabase
             .from('comunicaciones_srt')
             .select('id')
             .eq('srt_tra_id', com.traID)
             .single();
-          
+
           if (existe) {
             stats.existentes++;
             continue;
           }
-          
+
           const detalle = await obtenerDetalleComunicacion(page, com.traID, com.catID, com.tipoActor);
-          
+
           const { data: nuevaCom, error: errorCom } = await supabase
             .from('comunicaciones_srt')
             .insert({
@@ -365,10 +373,10 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
             })
             .select()
             .single();
-          
+
           if (errorCom) continue;
           stats.comunicacionesNuevas++;
-          
+
           for (const adj of detalle.archivosAdjuntos || []) {
             await supabase.from('adjuntos_comunicacion_srt').insert({
               comunicacion_id: nuevaCom.id,
@@ -385,13 +393,17 @@ app.post('/srt/importar-comunicaciones', async (req, res) => {
         stats.errores.push(caso.numero_srt);
       }
     }
-    
+
     await browser.close();
+    browser = null;
     console.log('📊 Resumen:', stats);
     res.json({ success: true, stats });
   } catch (error) {
+    console.error('❌ Error importar-comunicaciones:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message, stats });
+  } finally {
+    liberarTurnoBrowser();
   }
 });
 
@@ -401,7 +413,7 @@ app.get('/srt/comunicaciones/:expedienteOid', async (req, res) => {
     .select('*, adjuntos_comunicacion_srt (*)')
     .eq('srt_expediente_oid', req.params.expedienteOid)
     .order('fecha_notificacion', { ascending: false });
-  
+
   if (error) return res.status(500).json({ error: error.message });
   res.json({ comunicaciones: data });
 });
@@ -417,43 +429,40 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
   let browser;
 
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-    
+    await esperarTurnoBrowser();
+
+    browser = await lanzarBrowser();
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-    
+
     const loginOk = await loginYNavegarSRT(page, usuario, password);
-    if (!loginOk) { 
-      await browser.close(); 
-      return res.status(401).json({ error: 'Login fallido' }); 
+    if (!loginOk) {
+      await browser.close();
+      return res.status(401).json({ error: 'Login fallido' });
     }
-    
+
     await navegarAExpedientes(page);
-    
+
     console.log(`📁 Importando comunicaciones del expediente OID: ${expedienteOid}`);
-    
+
     const comunicaciones = await obtenerComunicaciones(page, expedienteOid);
-    
+
     for (const com of comunicaciones) {
       if (!com.traID) continue;
-      
+
       const { data: existe } = await supabase
         .from('comunicaciones_srt')
         .select('id')
         .eq('srt_tra_id', com.traID)
         .single();
-      
+
       if (existe) {
         stats.existentes++;
         continue;
       }
-      
+
       const detalle = await obtenerDetalleComunicacion(page, com.traID, com.catID, com.tipoActor);
-      
+
       const { data: nuevaCom, error: errorCom } = await supabase
         .from('comunicaciones_srt')
         .insert({
@@ -471,14 +480,14 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
         })
         .select()
         .single();
-      
+
       if (errorCom) {
         console.log(`⚠️ Error insertando comunicación: ${errorCom.message}`);
         continue;
       }
-      
+
       stats.comunicacionesNuevas++;
-      
+
       for (const adj of detalle.archivosAdjuntos || []) {
         await supabase.from('adjuntos_comunicacion_srt').insert({
           comunicacion_id: nuevaCom.id,
@@ -490,18 +499,21 @@ app.post('/srt/importar-comunicaciones-expediente', async (req, res) => {
         stats.adjuntos++;
       }
     }
-    
+
     await browser.close();
-    
+    browser = null;
+
     console.log(`✅ Comunicaciones importadas:`, stats);
     res.json({ success: true, stats });
-    
+
   } catch (error) {
     console.error('❌ Error importando comunicaciones:', error.message);
     if (browser) await browser.close();
     res.status(500).json({ error: error.message, stats });
+  } finally {
+    liberarTurnoBrowser();
   }
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.2 en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 SRT Scraper v7.3 en puerto ${PORT}`));
